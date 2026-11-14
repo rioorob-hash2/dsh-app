@@ -149,6 +149,11 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         }
         web.setBackgroundColor(0xFF101418.toInt())
+        // Renderer должен переживать уход в фон: иначе Javascript, следящий за ответом
+        // агента, умрёт вместе с рендерером и уведомление не придёт.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.addJavascriptInterface(Bridge(), "DshBridge")
@@ -335,46 +340,136 @@ class MainActivity : AppCompatActivity() {
     private fun injectReplyWatcher() {
         val js = """
             (function(){
-              if (window.__dshReplyWatch) return;
-              window.__dshReplyWatch = true;
-              var lastText = '';
-              var timer = null;
-              var sels = [
-                '[data-message-role="assistant"]',
-                '[data-role="assistant"]',
-                '[class*="assistant"]',
-                '[class*="message-assistant"]',
-                '[class*="bubble-assistant"]'
-              ];
-              function candidate(){
-                for (var i = 0; i < sels.length; i++) {
-                  var nodes = document.querySelectorAll(sels[i]);
-                  if (nodes.length) {
-                    var t = (nodes[nodes.length - 1].innerText || '').trim();
-                    if (t) return t;
+              if (window.__dshNotify) { window.__dshNotify.recheck(); return; }
+              // Точные маркеры DSH Web GUI (взяты из исходников @deepseek-ai/dsh-client-ui-chat):
+              //   [data-chat-running]      — «агент работает» (глубокое погружение), исчезает по завершении хода;
+              //   [data-chat-flow-kind]    — строки потока: user / steering / turn-process / turn-tail / turn-trigger
+              //                              / node / group / turn;
+              //   [data-chat-turn]         — номер хода, годится для дедупликации.
+              var S = {
+                running: false,
+                turn: -1,
+                notified: '',
+                startedAt: 0,
+                fallbackText: '',
+                recheck: function(){ scan(); }
+              };
+              window.__dshNotify = S;
+
+              var SKIP = {
+                'user': 1, 'steering': 1, 'turn-trigger': 1, 'turn-process': 1, 'turn-tail': 1
+              };
+
+              function clean(s){
+                return String(s == null ? '' : s)
+                  .replace(/[ \t\u00a0]+/g, ' ')
+                  .replace(/\n{3,}/g, '\n\n')
+                  .trim();
+              }
+
+              function runningNow(){
+                var el = document.querySelector('[data-chat-running]');
+                if (!el) return false;
+                // data-holding = сообщение стоит в очереди, агент ещё не взялся за работу
+                if (el.hasAttribute('data-holding')) return false;
+                return true;
+              }
+
+              function rows(){ return document.querySelectorAll('[data-chat-flow-kind]'); }
+
+              function maxTurn(){
+                var best = -1;
+                var rs = rows();
+                for (var i = 0; i < rs.length; i++){
+                  var v = parseInt(rs[i].getAttribute('data-chat-turn'), 10);
+                  if (!isNaN(v) && v > best) best = v;
+                }
+                return best;
+              }
+
+              function column(){
+                return document.querySelector('[data-slot="conversation.view"]')
+                  || document.querySelector('[data-slot="conversation.chat.flow"]')
+                  || document.body;
+              }
+
+              // Текст последней содержательной строки потока = ответ агента.
+              function lastReplyText(){
+                var rs = rows();
+                for (var i = rs.length - 1; i >= 0; i--){
+                  var kind = rs[i].getAttribute('data-chat-flow-kind');
+                  if (SKIP[kind]) continue;
+                  var t = clean(rs[i].innerText);
+                  if (t) return t;
+                }
+                return clean(column().innerText);
+              }
+
+              function preview(text){
+                var t = clean(text);
+                return t.length > 240 ? '…' + t.slice(-240) : t;
+              }
+
+              // Резервный путь на случай, если DSH переименует атрибуты:
+              // следим за приростом текста колонки чата, а не за обрезанным срезом.
+              function fallbackScan(){
+                var t = clean(column().innerText);
+                var prev = S.fallbackText;
+                S.fallbackText = t;
+                if (!prev || !t || t.length <= prev.length) return false;
+                var anchor = prev.slice(-120);
+                if (anchor && t.lastIndexOf(anchor) === -1) return false;
+                return true;
+              }
+
+              function scan(){
+                var now = runningNow();
+                var was = S.running;
+                S.running = now;
+                var turn = maxTurn();
+                if (now && !was) S.startedAt = Date.now();
+                if (!now && was){
+                  var dur = Date.now() - S.startedAt;
+                  var text = preview(lastReplyText());
+                  var key = turn + '|' + text.slice(-120);
+                  if (dur >= 400 && text.length >= 12 && key !== S.notified){
+                    S.notified = key;
+                    DshBridge.replySeen(text);
+                    return;
                   }
                 }
-                var main = document.querySelector('main') || document.body;
-                var all = (main.innerText || '').trim();
-                return all.length > 600 ? all.slice(-600) : all;
+                if (!now && turn > S.turn){
+                  S.turn = turn;
+                  if (!rows().length){ /* структура не найдена — ниже сработает резерв */ }
+                }
               }
-              function scan(){
-                var t = candidate();
-                if (!t || t === lastText) return;
-                var prev = lastText;
-                lastText = t;
-                if (!prev) return;
-                if (t.length <= prev.length) return;
-                var tail = t.slice(-400);
-                if (tail.indexOf(prev.slice(-80)) === -1) return;
-                DshBridge.replySeen(t.slice(-260));
-              }
+
               var obs = new MutationObserver(function(){
-                clearTimeout(timer);
-                timer = setTimeout(scan, 1200);
+                var now = runningNow();
+                if (now !== S.running) scan();
               });
-              obs.observe(document.body, { childList: true, subtree: true, characterData: true });
-              setInterval(scan, 4000);
+              obs.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['data-chat-running', 'data-holding', 'data-chat-flow-kind']
+              });
+
+              // Подстраховка, если мутация прошла мимо наблюдателя (и устаревшая версия DOM).
+              setInterval(function(){
+                if (!rows().length) {
+                  if (fallbackScan()) {
+                    var text = preview(clean(column().innerText));
+                    var key = 'f|' + text.slice(-120);
+                    if (text.length >= 12 && key !== S.notified){
+                      S.notified = key;
+                      DshBridge.replySeen(text);
+                    }
+                  }
+                  return;
+                }
+                scan();
+              }, 5000);
             })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
@@ -384,20 +479,25 @@ class MainActivity : AppCompatActivity() {
     private fun dumpDomInfo() {
         val js = """
             (function(){
-              var out = { counts: {}, sample: '' };
-              var sels = [
-                '[data-message-role="assistant"]','[data-role="assistant"]',
-                '[class*="assistant"]','[class*="message-assistant"]','[class*="bubble-assistant"]',
-                '[class*="message"]','[class*="markdown"]'
-              ];
-              for (var i = 0; i < sels.length; i++) out.counts[sels[i]] = document.querySelectorAll(sels[i]).length;
-              var main = document.querySelector('main') || document.body;
-              out.sample = ((main.innerText || '')).slice(-400);
+              var out = { watcher: !!window.__dshNotify, running: false, holding: false, turn: -1, kinds: {}, rows: 0, sample: '' };
+              var runEl = document.querySelector('[data-chat-running]');
+              out.running = !!runEl;
+              out.holding = !!(runEl && runEl.hasAttribute('data-holding'));
+              var rs = document.querySelectorAll('[data-chat-flow-kind]');
+              out.rows = rs.length;
+              for (var i = 0; i < rs.length; i++) {
+                var k = rs[i].getAttribute('data-chat-flow-kind');
+                out.kinds[k] = (out.kinds[k] || 0) + 1;
+                var tv = parseInt(rs[i].getAttribute('data-chat-turn'), 10);
+                if (!isNaN(tv) && tv > out.turn) out.turn = tv;
+              }
+              var col = document.querySelector('[data-slot="conversation.view"]') || document.body;
+              out.sample = (col.innerText || '').slice(-300);
               return JSON.stringify(out);
             })();
         """.trimIndent()
         web.evaluateJavascript(js) { result ->
-            android.util.Log.i("DshDom", "selectors: $result")
+            android.util.Log.i("DshDom", "state: $result")
             Toast.makeText(this, "Р вЂќР С‘Р В°Р С–Р Р…Р С•РЎРѓРЎвЂљР С‘Р С”Р В° DOM Р В·Р В°Р С—Р С‘РЎРѓР В°Р Р…Р В° Р Р† logcat", Toast.LENGTH_SHORT).show()
         }
     }
@@ -435,11 +535,14 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun replySeen(preview: String?) {
             val text = (preview ?: "").trim()
-            if (text.length < 40) return
+            if (text.length < 12) return
             val now = System.currentTimeMillis()
-            if (inForeground || text == lastNotified || now - lastNotifiedAt < 6000) return
+            if (inForeground) return
+            if (text == lastNotified && now - lastNotifiedAt < 60000) return
+            if (now - lastNotifiedAt < 4000) return
             lastNotified = text
             lastNotifiedAt = now
+            android.util.Log.i("DshNotify", "reply -> notification (" + text.length + " chars)")
             runOnUiThread { Notifier.showReply(this@MainActivity, text) }
         }
     }
@@ -621,7 +724,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         inForeground = true
-        // Р вЂ™Р ВµРЎР‚Р Р…РЎС“Р В»Р С‘РЎРѓРЎРЉ Р Р† Р С—РЎР‚Р С‘Р В»Р С•Р В¶Р ВµР Р…Р С‘Р Вµ РІР‚вЂќ Р С—Р С•РЎРѓРЎвЂљР С•РЎРЏР Р…Р Р…РЎвЂ№Р в„– Р С‘Р Р…Р Т‘Р С‘Р С”Р В°РЎвЂљР С•РЎР‚ Р В±Р С•Р В»РЎРЉРЎв‚¬Р Вµ Р Р…Р Вµ Р Р…РЎС“Р В¶Р ВµР Р….
+        // Вернулись в приложение: уведомление об ответе больше не нужно.
+        Notifier.cancelReply(this)
+        // Если система приостанавливала таймеры WebView, будим их обратно.
+        web.resumeTimers()
+        // Постоянный индикатор «держу связь» тоже снимаем.
         stopService(Intent(this, LinkService::class.java))
     }
 

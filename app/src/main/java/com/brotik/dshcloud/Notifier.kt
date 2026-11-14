@@ -48,19 +48,31 @@ object Notifier {
         ensureChannels(context)
         val text = preview.trim().ifEmpty { context.getString(R.string.reply_empty) }
         val notification = NotificationCompat.Builder(context, CHANNEL_REPLIES)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_reply)
+            .setColor(0xFF2D7FF9.toInt())
             .setContentTitle(context.getString(R.string.reply_title))
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setOnlyAlertOnce(false)
             .setContentIntent(openAppIntent(context))
             .build()
         try {
             NotificationManagerCompat.from(context).notify(REPLY_ID, notification)
         } catch (e: SecurityException) {
             // нет разрешения POST_NOTIFICATIONS — просто молчим
+        }
+    }
+
+    /** Убрать уведомление об ответе: вызывается, когда БРАТИК вернулся в приложение. */
+    fun cancelReply(context: Context) {
+        try {
+            NotificationManagerCompat.from(context).cancel(REPLY_ID)
+        } catch (e: SecurityException) {
+            // разрешения нет — и уведомления не было
         }
     }
 
@@ -72,7 +84,7 @@ object Notifier {
     fun linkNotification(context: Context): android.app.Notification {
         ensureChannels(context)
         return NotificationCompat.Builder(context, CHANNEL_LINK)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_reply)
             .setContentTitle(context.getString(R.string.link_title))
             .setContentText(context.getString(R.string.link_text))
             .setOngoing(true)
