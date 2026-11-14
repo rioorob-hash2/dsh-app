@@ -39,4 +39,15 @@
     <string name="image_not_ready">Картинка ещё не готова или это не файл</string>
     <string name="downloading">Скачивается…</string>
     <string name="no_browser">Некуда открыть ссылку</string>
+    <string name="reply_title">Кентяра ответила</string>
+    <string name="reply_empty">Новое сообщение в DSH</string>
+    <string name="reply_test">Это тестовое уведомление: канал работает, всё настроено верно.</string>
+    <string name="channel_replies">Ответы Кентяры</string>
+    <string name="channel_replies_desc">Когда агент отвечает, а приложение свёрнуто</string>
+    <string name="channel_link">Связь с DSH</string>
+    <string name="channel_link_desc">Тихий индикатор, что приложение держит соединение в фоне</string>
+    <string name="link_title">Держу связь с DSH</string>
+    <string name="link_text">Свёрнуто — ответы придут уведомлением</string>
+    <string name="test_notification">Проверить уведомление</string>
+    <string name="notifications_blocked">Уведомления запрещены в системе — включи их для DSH в настройках</string>
 </resources>

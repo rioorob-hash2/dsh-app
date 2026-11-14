@@ -49,6 +49,16 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingAuth: HttpAuthHandler? = null
     private var pendingFileCallback: android.webkit.ValueCallback<Array<Uri>>? = null
+    private var inForeground = false
+    private var lastNotified = ""
+    private var lastNotifiedAt = 0L
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) {
+                Toast.makeText(this, R.string.notifications_blocked, Toast.LENGTH_LONG).show()
+            }
+        }
 
     private val fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = pendingFileCallback
@@ -77,6 +87,9 @@ class MainActivity : AppCompatActivity() {
         progress = findViewById(R.id.progress)
         offline = findViewById(R.id.offline)
 
+        Notifier.ensureChannels(this)
+        askNotificationPermission()
+
         applyInsets()
         setupWebView()
 
@@ -86,6 +99,10 @@ class MainActivity : AppCompatActivity() {
             true
         }
         findViewById<TextView>(R.id.settings).setOnClickListener { showLoginDialog(firstRun = false) }
+        findViewById<TextView>(R.id.settings).setOnLongClickListener {
+            dumpDomInfo()
+            true
+        }
         findViewById<TextView>(R.id.title).setOnLongClickListener {
             showLoginDialog(firstRun = false); true
         }
@@ -166,6 +183,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
                 injectSaver()
+                injectReplyWatcher()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -295,6 +313,89 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
+    /**
+     * Слежение за ответами агента. Точных селекторов DSH не публикует, поэтому
+     * пробуем набор типовых, а в крайнем случае — прирост текста основного
+     * контейнера. Решение «уведомлять или нет» принимает Kotlin: только когда
+     * приложение не на переднем плане, с дедупом и паузой.
+     */
+    private fun injectReplyWatcher() {
+        val js = """
+            (function(){
+              if (window.__dshReplyWatch) return;
+              window.__dshReplyWatch = true;
+              var lastText = '';
+              var timer = null;
+              var sels = [
+                '[data-message-role="assistant"]',
+                '[data-role="assistant"]',
+                '[class*="assistant"]',
+                '[class*="message-assistant"]',
+                '[class*="bubble-assistant"]'
+              ];
+              function candidate(){
+                for (var i = 0; i < sels.length; i++) {
+                  var nodes = document.querySelectorAll(sels[i]);
+                  if (nodes.length) {
+                    var t = (nodes[nodes.length - 1].innerText || '').trim();
+                    if (t) return t;
+                  }
+                }
+                var main = document.querySelector('main') || document.body;
+                var all = (main.innerText || '').trim();
+                return all.length > 600 ? all.slice(-600) : all;
+              }
+              function scan(){
+                var t = candidate();
+                if (!t || t === lastText) return;
+                var prev = lastText;
+                lastText = t;
+                if (!prev) return;
+                if (t.length <= prev.length) return;
+                var tail = t.slice(-400);
+                if (tail.indexOf(prev.slice(-80)) === -1) return;
+                DshBridge.replySeen(t.slice(-260));
+              }
+              var obs = new MutationObserver(function(){
+                clearTimeout(timer);
+                timer = setTimeout(scan, 1200);
+              });
+              obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+              setInterval(scan, 4000);
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js, null)
+    }
+
+    /** Диагностика селекторов: пишем в logcat по долгому нажатию «⋯». */
+    private fun dumpDomInfo() {
+        val js = """
+            (function(){
+              var out = { counts: {}, sample: '' };
+              var sels = [
+                '[data-message-role="assistant"]','[data-role="assistant"]',
+                '[class*="assistant"]','[class*="message-assistant"]','[class*="bubble-assistant"]',
+                '[class*="message"]','[class*="markdown"]'
+              ];
+              for (var i = 0; i < sels.length; i++) out.counts[sels[i]] = document.querySelectorAll(sels[i]).length;
+              var main = document.querySelector('main') || document.body;
+              out.sample = ((main.innerText || '')).slice(-400);
+              return JSON.stringify(out);
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js) { result ->
+            android.util.Log.i("DshDom", "selectors: $result")
+            Toast.makeText(this, "Диагностика DOM записана в logcat", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun askNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     private inner class Bridge {
         @JavascriptInterface
         fun save(name: String?, mime: String?, base64: String?, share: Boolean) {
@@ -315,6 +416,18 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 Toast.makeText(this@MainActivity, R.string.image_not_ready, Toast.LENGTH_SHORT).show()
             }
+        }
+
+        /** Пришёл прирост текста ответа: уведомляем, только если мы в фоне. */
+        @JavascriptInterface
+        fun replySeen(preview: String?) {
+            val text = (preview ?: "").trim()
+            if (text.length < 40) return
+            val now = System.currentTimeMillis()
+            if (inForeground || text == lastNotified || now - lastNotifiedAt < 6000) return
+            lastNotified = text
+            lastNotifiedAt = now
+            runOnUiThread { Notifier.showReply(this@MainActivity, text) }
         }
     }
 
@@ -372,6 +485,19 @@ class MainActivity : AppCompatActivity() {
         container.addView(urlField)
         container.addView(userField)
         container.addView(passField)
+
+        // Когда вход уже сохранён — даём кнопку проверки уведомлений.
+        if (!firstRun) {
+            container.addView(
+                android.widget.Button(this).apply {
+                    text = getString(R.string.test_notification)
+                    setOnClickListener {
+                        Notifier.test(this@MainActivity)
+                        Toast.makeText(this@MainActivity, R.string.reply_test, Toast.LENGTH_SHORT).show()
+                    }
+                },
+            )
+        }
 
         val builder = AlertDialog.Builder(this)
             .setTitle(R.string.login_title)
@@ -445,9 +571,27 @@ class MainActivity : AppCompatActivity() {
         showLoginDialog(firstRun = true)
     }
 
+    override fun onResume() {
+        super.onResume()
+        inForeground = true
+        // Вернулись в приложение — постоянный индикатор больше не нужен.
+        stopService(Intent(this, LinkService::class.java))
+    }
+
     override fun onPause() {
         super.onPause()
+        inForeground = false
         CookieManager.getInstance().flush()
+        // Уходим в фон: держим процесс живым, чтобы наблюдение за ответами работало.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(Intent(this, LinkService::class.java))
+            } else {
+                startService(Intent(this, LinkService::class.java))
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("DshApp", "link service did not start: ${e.message}")
+        }
     }
 
     @Deprecated("Deprecated in Java")
