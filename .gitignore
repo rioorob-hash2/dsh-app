@@ -1,0 +1,11 @@
+.tmp/
+.tmp2/
+.gradle/
+build/
+app/build/
+local.properties
+keystore.properties
+keystore.jks
+*.apk
+*.apk.bin
+dist/

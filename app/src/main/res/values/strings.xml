@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DSH</string>
+    <string name="reload">Перезагрузить</string>
+    <string name="settings">Настройки входа</string>
+    <string name="retry">Повторить</string>
+    <string name="offline_title">Нет связи с DSH</string>
+    <string name="offline_hint">Проверь интернет и нажми «Повторить».</string>
+    <string name="login_title">Вход в DSH</string>
+    <string name="login_hint">Логин и пароль basic auth. Пароль хранится только на этом телефоне.</string>
+    <string name="url_hint">Адрес</string>
+    <string name="login">Логин</string>
+    <string name="password">Пароль</string>
+    <string name="save">Сохранить</string>
+    <string name="cancel">Отмена</string>
+    <string name="saved">Сохранено, перезагружаю</string>
+    <string name="bad_password">Нужен пароль</string>
+    <string name="bad_url">Адрес должен начинаться с https:// и содержать домен</string>
+    <string name="external_link">Открыть в браузере?</string>
+    <string name="open">Открыть</string>
+    <string name="update_title">Обновление DSH</string>
+    <string name="update_found">Доступна версия %1$s (у тебя %2$s). Скачать и установить?</string>
+    <string name="update_now">Обновить</string>
+    <string name="later">Позже</string>
+    <string name="update_checking">Проверяю обновления…</string>
+    <string name="update_none">Актуальная версия: %1$s</string>
+    <string name="update_downloading">Скачиваю APK…</string>
+    <string name="update_failed">Не удалось обновить: нет сети или релиза</string>
+</resources>
