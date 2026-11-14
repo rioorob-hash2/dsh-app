@@ -1,4 +1,4 @@
-﻿package com.brotik.dshcloud
+package com.brotik.dshcloud
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -442,7 +442,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun baseUrlSafe(): String = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
+    /**
+     * Чистим сохранённый адрес от одноразового launch-token: после каждого
+     * рестарта контейнера DSH выдаёт новый, и старая ссылка навсегда мертва.
+     * Всегда приводим вход к странице /login — она достаёт свежий токен.
+     */
+    private fun normalizeUrl(raw: String): String {
+        val cleaned = raw.trim()
+            .substringBefore("?")
+            .trimEnd('/')
+        if (cleaned.isEmpty()) return DEFAULT_URL
+        return if (cleaned.endsWith("/login")) cleaned else "$cleaned/login"
+    }
+
+    private fun baseUrlSafe(): String = normalizeUrl(prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL)
 
     private fun loadStart() {
         offline.visibility = View.GONE
@@ -524,8 +537,13 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
         val builder = AlertDialog.Builder(this)
-            .setTitle(R.string.login_title)
+            .setTitle(getString(R.string.login_title) + "  ·  v" + version)
             .setMessage(R.string.login_hint)
             .setView(container)
             .setPositiveButton(R.string.save, null)
@@ -544,7 +562,7 @@ class MainActivity : AppCompatActivity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val user = userField.text.toString().trim()
                 val pass = passField.text.toString()
-                val url = urlField.text.toString().trim().ifEmpty { DEFAULT_URL }
+                val url = normalizeUrl(urlField.text.toString())
                 if (user.isEmpty() || pass.isEmpty()) {
                     Toast.makeText(this, R.string.bad_password, Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
