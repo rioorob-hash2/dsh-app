@@ -12,6 +12,10 @@
     <string name="login">Логин</string>
     <string name="password">Пароль</string>
     <string name="save">Сохранить</string>
+    <string name="logout">Выйти</string>
+    <string name="logged_out">Вышли из аккаунта, введи логин заново</string>
+    <string name="logout_title">Выйти из аккаунта?</string>
+    <string name="logout_hint">Очищу сохранённые логин и пароль, cookie и кэш. Сессия в DSH сбросится, при следующем входе понадобится логин заново.</string>
     <string name="cancel">Отмена</string>
     <string name="saved">Сохранено, перезагружаю</string>
     <string name="bad_password">Нужен пароль</string>
@@ -26,4 +30,13 @@
     <string name="update_none">Актуальная версия: %1$s</string>
     <string name="update_downloading">Скачиваю APK…</string>
     <string name="update_failed">Не удалось обновить: нет сети или релиза</string>
+    <string name="saved_to_downloads">Сохранено в Загрузки: %1$s</string>
+    <string name="save_failed">Не удалось сохранить: %1$s</string>
+    <string name="image_actions">Картинка</string>
+    <string name="save_image">Сохранить в Загрузки</string>
+    <string name="share_image">Поделиться</string>
+    <string name="share_title">Поделиться файлом</string>
+    <string name="image_not_ready">Картинка ещё не готова или это не файл</string>
+    <string name="downloading">Скачивается…</string>
+    <string name="no_browser">Некуда открыть ссылку</string>
 </resources>

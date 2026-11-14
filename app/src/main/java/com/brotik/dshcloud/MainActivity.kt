@@ -1,4 +1,4 @@
-﻿package com.brotik.dshcloud
+package com.brotik.dshcloud
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -11,6 +11,7 @@ import android.view.View
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.HttpAuthHandler
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -32,12 +33,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 
 /**
- * Р СћР С•Р Р…Р С”Р В°РЎРЏ Р С•Р В±РЎвЂРЎР‚РЎвЂљР С”Р В° Р Р…Р В°Р Т‘ Р С•Р В±Р В»Р В°РЎвЂЎР Р…РЎвЂ№Р С Web GUI DSH: РЎвЂљР С•РЎвЂљ Р В¶Р Вµ Р С‘Р Р…РЎвЂљР ВµРЎР‚РЎвЂћР ВµР в„–РЎРѓ, РЎвЂЎРЎвЂљР С• Р С‘ Р Р† Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р Вµ,
- * Р Р…Р С• Р В±Р ВµР В· Р В°Р Т‘РЎР‚Р ВµРЎРѓР Р…Р С•Р в„– РЎРѓРЎвЂљРЎР‚Р С•Р С”Р С‘ Р С‘ Р Р†Р С”Р В»Р В°Р Т‘Р С•Р С”.
+ * Тонкая обёртка над облачным Web GUI DSH: тот же интерфейс, что и в браузере,
+ * но без адресной строки и вкладок.
  *
- * Р СџР ВµРЎР‚Р Р†РЎвЂ№Р в„– Р В·Р В°Р С—РЎС“РЎРѓР С” РЎРѓР С—РЎР‚Р В°РЎв‚¬Р С‘Р Р†Р В°Р ВµРЎвЂљ Р В»Р С•Р С–Р С‘Р Р…/Р С—Р В°РЎР‚Р С•Р В»РЎРЉ basic auth Р С‘ РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљ Р С‘РЎвЂ¦ Р Р† Р С—РЎР‚Р С‘Р Р†Р В°РЎвЂљР Р…РЎвЂ№РЎвЂ¦
- * Р Р…Р В°РЎРѓРЎвЂљРЎР‚Р С•Р в„–Р С”Р В°РЎвЂ¦ Р С—РЎР‚Р С‘Р В»Р С•Р В¶Р ВµР Р…Р С‘РЎРЏ. Р вЂќР В°Р В»РЎРЉРЎв‚¬Р Вµ DSH РЎРѓР В°Р С РЎРѓРЎвЂљР В°Р Р†Р С‘РЎвЂљ РЎРѓР Р†Р С•РЎР‹ cookie, Р С‘ Р Р†РЎвЂ¦Р С•Р Т‘ Р Р…Р Вµ Р Р…РЎС“Р В¶Р ВµР Р…,
- * Р С—Р С•Р С”Р В° cookie Р В¶Р С‘Р Р†Р В°РЎРЏ (30 Р Т‘Р Р…Р ВµР в„–) РІР‚вЂќ РЎР‚Р С•Р Р†Р Р…Р С• Р С”Р В°Р С” Р Р† Р В±РЎР‚Р В°РЎС“Р В·Р ВµРЎР‚Р Вµ.
+ * Первый запуск спрашивает логин/пароль basic auth (поля пустые, чтобы ничего
+ * не подставлялось заранее) и хранит их в приватных настройках приложения.
+ * Дальше DSH сам ставит свою cookie, и вход не нужен, пока она живая.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -85,7 +86,9 @@ class MainActivity : AppCompatActivity() {
             true
         }
         findViewById<TextView>(R.id.settings).setOnClickListener { showLoginDialog(firstRun = false) }
-        findViewById<TextView>(R.id.title).setOnLongClickListener { showLoginDialog(firstRun = false); true }
+        findViewById<TextView>(R.id.title).setOnLongClickListener {
+            showLoginDialog(firstRun = false); true
+        }
         findViewById<View>(R.id.retry).setOnClickListener {
             offline.visibility = View.GONE
             reload()
@@ -106,10 +109,7 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            root.updatePadding(
-                top = bars.top,
-                bottom = maxOf(bars.bottom, ime.bottom),
-            )
+            root.updatePadding(top = bars.top, bottom = maxOf(bars.bottom, ime.bottom))
             insets
         }
     }
@@ -133,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         web.setBackgroundColor(0xFF101418.toInt())
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
+        web.addJavascriptInterface(Bridge(), "DshBridge")
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -164,12 +165,11 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
+                injectSaver()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) {
-                    offline.visibility = View.VISIBLE
-                }
+                if (request.isForMainFrame) offline.visibility = View.VISIBLE
             }
         }
 
@@ -186,9 +186,8 @@ class MainActivity : AppCompatActivity() {
                 params: FileChooserParams,
             ): Boolean {
                 pendingFileCallback = callback
-                val intent = params.createIntent()
                 return try {
-                    fileChooser.launch(intent)
+                    fileChooser.launch(params.createIntent())
                     true
                 } catch (e: ActivityNotFoundException) {
                     pendingFileCallback = null
@@ -202,20 +201,124 @@ class MainActivity : AppCompatActivity() {
                 val request = DownloadManager.Request(Uri.parse(url)).apply {
                     setMimeType(mimeType)
                     setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, Uri.parse(url).lastPathSegment ?: "dsh-file")
+                    setDestinationInExternalPublicDir(
+                        android.os.Environment.DIRECTORY_DOWNLOADS,
+                        Uri.parse(url).lastPathSegment ?: "dsh-file",
+                    )
                     addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url) ?: "")
                     addRequestHeader("User-Agent", web.settings.userAgentString)
                 }
                 (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
-                Toast.makeText(this, "Р РЋР С”Р В°РЎвЂЎР С‘Р Р†Р В°Р ВµРЎвЂљРЎРѓРЎРЏРІР‚В¦", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, R.string.downloading, Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Toast.makeText(this, "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ РЎРѓР С”Р В°РЎвЂЎР В°РЎвЂљРЎРЉ: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, getString(R.string.save_failed, e.message ?: ""), Toast.LENGTH_LONG).show()
             }
         })
+
+        // Долгое нажатие по картинке: у DSH вложения приходят как blob:-, их
+        // системный загрузчик не берёт. Текст при этом выделяется как обычно.
+        web.setOnLongClickListener {
+            val hit = web.hitTestResult
+            val url = hit.extra
+            val isImage = hit.type == WebView.HitTestResult.IMAGE_TYPE ||
+                hit.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE ||
+                (hit.type == WebView.HitTestResult.SRC_ANCHOR_TYPE && (url?.contains("blob:") == true))
+            if (isImage && !url.isNullOrBlank()) {
+                askImageAction(url)
+                true
+            } else {
+                false
+            }
+        }
     }
 
-    private fun baseUrlSafe(): String =
-        prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
+    private fun askImageAction(url: String) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.image_actions)
+            .setItems(arrayOf(getString(R.string.save_image), getString(R.string.share_image))) { _, which ->
+                saveFromUrl(url, share = which == 1)
+            }
+            .show()
+    }
+
+    /** Просит страницу прочитать blob/http/data и отдать байты мосту. */
+    private fun saveFromUrl(url: String, share: Boolean) {
+        val quoted = org.json.JSONObject.quote(url)
+        web.evaluateJavascript(
+            "(function(){return window.__dshFind ? window.__dshFind($quoted) : Promise.reject('no helper');})()",
+            null,
+        )
+        val js = "window.__dshFind(" + quoted + ").then(function(p){" +
+            "var c=p.data.indexOf(',');DshBridge.save(p.name,p.mime,p.data.substring(c+1)," + share + ");" +
+            "}).catch(function(e){DshBridge.fail(String(e));});"
+        web.evaluateJavascript(js, null)
+    }
+
+    /** JS-хелпер: читает blob/http/data и возвращает dataURL + mime + имя. */
+    private fun injectSaver() {
+        val js = """
+            (function(){
+              if (window.__dshFind) return;
+              window.__dshFind = function(url){
+                return fetch(url).then(function(r){
+                  if (!r.ok) throw new Error('http ' + r.status);
+                  return r.blob();
+                }).then(function(b){
+                  return new Promise(function(resolve, reject){
+                    var fr = new FileReader();
+                    fr.onload = function(){
+                      var name = '', mime = b.type || 'application/octet-stream';
+                      try { name = decodeURIComponent((url.split('?')[0].split('/').pop()) || ''); } catch (e) { name = ''; }
+                      if (!name || name.length > 80) name = 'dsh-' + Date.now();
+                      resolve({ name: name, mime: mime, data: String(fr.result) });
+                    };
+                    fr.onerror = function(){ reject('read'); };
+                    fr.readAsDataURL(b);
+                  });
+                });
+              };
+              document.addEventListener('click', function(e){
+                var node = e.target;
+                var a = node && node.closest ? node.closest('a[download]') : null;
+                if (!a) return;
+                var href = a.getAttribute('href') || '';
+                if (href.indexOf('blob:') !== 0 && href.indexOf('data:') !== 0) return;
+                e.preventDefault();
+                var label = a.getAttribute('download') || 'dsh-file';
+                window.__dshFind(href).then(function(p){
+                  var c = p.data.indexOf(',');
+                  DshBridge.save(label || p.name, p.mime, p.data.substring(c + 1), false);
+                }).catch(function(){ DshBridge.fail('download'); });
+              }, true);
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js, null)
+    }
+
+    private inner class Bridge {
+        @JavascriptInterface
+        fun save(name: String?, mime: String?, base64: String?, share: Boolean) {
+            val n = name ?: "dsh-file"
+            val m = mime ?: "application/octet-stream"
+            val data = base64 ?: ""
+            runOnUiThread {
+                if (data.isEmpty()) {
+                    Toast.makeText(this@MainActivity, R.string.image_not_ready, Toast.LENGTH_SHORT).show()
+                } else {
+                    Saver.saveBase64(this@MainActivity, n, m, data, share)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun fail(reason: String?) {
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, R.string.image_not_ready, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun baseUrlSafe(): String = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
 
     private fun loadStart() {
         offline.visibility = View.GONE
@@ -233,7 +336,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     startActivity(Intent(Intent.ACTION_VIEW, url))
                 } catch (e: ActivityNotFoundException) {
-                    Toast.makeText(this, "Р СњР ВµР С”РЎС“Р Т‘Р В° Р С•РЎвЂљР С”РЎР‚РЎвЂ№РЎвЂљРЎРЉ РЎРѓРЎРѓРЎвЂ№Р В»Р С”РЎС“", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.no_browser, Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -241,9 +344,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Р вЂќР С‘Р В°Р В»Р С•Р С– Р Р†РЎвЂ¦Р С•Р Т‘Р В°. Р СџР ВµРЎР‚Р Р†РЎвЂ№Р в„– Р В·Р В°Р С—РЎС“РЎРѓР С” РЎРѓР С—РЎР‚Р В°РЎв‚¬Р С‘Р Р†Р В°Р ВµРЎвЂљ РЎвЂљР С•Р В»РЎРЉР С”Р С• Р В»Р С•Р С–Р С‘Р Р… Р С‘ Р С—Р В°РЎР‚Р С•Р В»РЎРЉ (Р В°Р Т‘РЎР‚Р ВµРЎРѓ
-     * РЎРѓР С—РЎР‚РЎРЏРЎвЂљР В°Р Р… Р Р† Р Р…Р В°РЎРѓРЎвЂљРЎР‚Р С•Р в„–Р С”Р В°РЎвЂ¦, РЎвЂЎРЎвЂљР С•Р В±РЎвЂ№ Р ВµР С–Р С• РЎРѓР В»РЎС“РЎвЂЎР В°Р в„–Р Р…Р С• Р Р…Р Вµ Р С‘РЎРѓР С—Р С•РЎР‚РЎвЂљР С‘РЎвЂљРЎРЉ); Р С—Р С•Р Р†РЎвЂљР С•РЎР‚Р Р…РЎвЂ№Р в„– Р Р†РЎвЂ№Р В·Р С•Р Р†
-     * Р С‘Р В· Р’В«РІвЂ№Р‡Р’В» Р С—Р С•Р С”Р В°Р В·РЎвЂ№Р Р†Р В°Р ВµРЎвЂљ Р Р†РЎРѓР Вµ РЎвЂљРЎР‚Р С‘ Р С—Р С•Р В»РЎРЏ.
+     * Диалог входа. Первый запуск спрашивает только логин и пароль, причём поля
+     * пустые — ничего не подставляем. Адрес сервера живёт в настройках («⋯»),
+     * чтобы его нельзя было случайно испортить.
      */
     private fun showLoginDialog(firstRun: Boolean) {
         val container = LinearLayout(this).apply {
@@ -258,30 +361,33 @@ class MainActivity : AppCompatActivity() {
         }
         val userField = EditText(this).apply {
             hint = getString(R.string.login)
-            setText(prefs.getString(KEY_USER, DEFAULT_USER) ?: DEFAULT_USER)
+            setText(prefs.getString(KEY_USER, "") ?: "")
         }
         val passField = EditText(this).apply {
             hint = getString(R.string.password)
             setText(prefs.getString(KEY_PASS, "") ?: "")
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         container.addView(urlField)
         container.addView(userField)
         container.addView(passField)
 
-        val dialog = AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(R.string.login_title)
             .setMessage(R.string.login_hint)
             .setView(container)
             .setPositiveButton(R.string.save, null)
-            .setNegativeButton(if (firstRun) R.string.cancel else R.string.cancel) { _, _ ->
+            .setNegativeButton(R.string.cancel) { _, _ ->
                 if (firstRun && pendingAuth != null) {
                     pendingAuth?.cancel()
                     pendingAuth = null
                     offline.visibility = View.VISIBLE
                 }
             }
-            .create()
+        // Выход доступен только когда вход уже сохранён.
+        if (!firstRun) builder.setNeutralButton(R.string.logout) { _, _ -> confirmLogout() }
+        val dialog = builder.create()
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -292,7 +398,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, R.string.bad_password, Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                if (!url.startsWith("http://") && !url.startsWith("https://") || !url.contains(".")) {
+                if ((!url.startsWith("http://") && !url.startsWith("https://")) || !url.contains(".")) {
                     Toast.makeText(this, R.string.bad_url, Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
@@ -316,6 +422,29 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
+    /** Выход: чистим сохранённые креды, cookie DSH и кэш страницы. */
+    private fun confirmLogout() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.logout_title)
+            .setMessage(R.string.logout_hint)
+            .setPositiveButton(R.string.logout) { _, _ -> doLogout() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun doLogout() {
+        prefs.edit().remove(KEY_USER).remove(KEY_PASS).apply()
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        web.clearCache(true)
+        web.clearHistory()
+        web.clearFormData()
+        android.webkit.WebStorage.getInstance().deleteAllData()
+        web.loadUrl("about:blank")
+        Toast.makeText(this, R.string.logged_out, Toast.LENGTH_LONG).show()
+        showLoginDialog(firstRun = true)
+    }
+
     override fun onPause() {
         super.onPause()
         CookieManager.getInstance().flush()
@@ -336,8 +465,6 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_URL = "url"
         private const val KEY_USER = "user"
         private const val KEY_PASS = "pass"
-        private const val DEFAULT_USER = "rioo"
         private const val DEFAULT_URL = "https://dsh-cloud-production-706a3ba8.up.railway.app/login"
     }
 }
-
