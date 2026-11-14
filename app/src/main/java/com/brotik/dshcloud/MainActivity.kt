@@ -1,4 +1,4 @@
-package com.brotik.dshcloud
+﻿package com.brotik.dshcloud
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
@@ -33,12 +33,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 
 /**
- * Тонкая обёртка над облачным Web GUI DSH: тот же интерфейс, что и в браузере,
- * но без адресной строки и вкладок.
+ * РўРѕРЅРєР°СЏ РѕР±С‘СЂС‚РєР° РЅР°Рґ РѕР±Р»Р°С‡РЅС‹Рј Web GUI DSH: С‚РѕС‚ Р¶Рµ РёРЅС‚РµСЂС„РµР№СЃ, С‡С‚Рѕ Рё РІ Р±СЂР°СѓР·РµСЂРµ,
+ * РЅРѕ Р±РµР· Р°РґСЂРµСЃРЅРѕР№ СЃС‚СЂРѕРєРё Рё РІРєР»Р°РґРѕРє.
  *
- * Первый запуск спрашивает логин/пароль basic auth (поля пустые, чтобы ничего
- * не подставлялось заранее) и хранит их в приватных настройках приложения.
- * Дальше DSH сам ставит свою cookie, и вход не нужен, пока она живая.
+ * РџРµСЂРІС‹Р№ Р·Р°РїСѓСЃРє СЃРїСЂР°С€РёРІР°РµС‚ Р»РѕРіРёРЅ/РїР°СЂРѕР»СЊ basic auth (РїРѕР»СЏ РїСѓСЃС‚С‹Рµ, С‡С‚РѕР±С‹ РЅРёС‡РµРіРѕ
+ * РЅРµ РїРѕРґСЃС‚Р°РІР»СЏР»РѕСЃСЊ Р·Р°СЂР°РЅРµРµ) Рё С…СЂР°РЅРёС‚ РёС… РІ РїСЂРёРІР°С‚РЅС‹С… РЅР°СЃС‚СЂРѕР№РєР°С… РїСЂРёР»РѕР¶РµРЅРёСЏ.
+ * Р”Р°Р»СЊС€Рµ DSH СЃР°Рј СЃС‚Р°РІРёС‚ СЃРІРѕСЋ cookie, Рё РІС…РѕРґ РЅРµ РЅСѓР¶РµРЅ, РїРѕРєР° РѕРЅР° Р¶РёРІР°СЏ.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var inForeground = false
     private var lastNotified = ""
     private var lastNotifiedAt = 0L
+    private var lastRecovery = 0L
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -120,7 +121,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Полоса сверху и клавиатура не должны залезать под системные панели. */
+    /** РџРѕР»РѕСЃР° СЃРІРµСЂС…Сѓ Рё РєР»Р°РІРёР°С‚СѓСЂР° РЅРµ РґРѕР»Р¶РЅС‹ Р·Р°Р»РµР·Р°С‚СЊ РїРѕРґ СЃРёСЃС‚РµРјРЅС‹Рµ РїР°РЅРµР»Рё. */
     private fun applyInsets() {
         val root = findViewById<FrameLayout>(R.id.root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
@@ -184,6 +185,16 @@ class MainActivity : AppCompatActivity() {
                 CookieManager.getInstance().flush()
                 injectSaver()
                 injectReplyWatcher()
+                web.evaluateJavascript(
+                    "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
+                ) { raw ->
+                    val text = raw ?: ""
+                    if (text.contains("authentication required", ignoreCase = true) &&
+                        inForeground
+                    ) {
+                        recoverStaleToken()
+                    }
+                }
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -233,8 +244,8 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Долгое нажатие по картинке: у DSH вложения приходят как blob:-, их
-        // системный загрузчик не берёт. Текст при этом выделяется как обычно.
+        // Р”РѕР»РіРѕРµ РЅР°Р¶Р°С‚РёРµ РїРѕ РєР°СЂС‚РёРЅРєРµ: Сѓ DSH РІР»РѕР¶РµРЅРёСЏ РїСЂРёС…РѕРґСЏС‚ РєР°Рє blob:-, РёС…
+        // СЃРёСЃС‚РµРјРЅС‹Р№ Р·Р°РіСЂСѓР·С‡РёРє РЅРµ Р±РµСЂС‘С‚. РўРµРєСЃС‚ РїСЂРё СЌС‚РѕРј РІС‹РґРµР»СЏРµС‚СЃСЏ РєР°Рє РѕР±С‹С‡РЅРѕ.
         web.setOnLongClickListener {
             val hit = web.hitTestResult
             val url = hit.extra
@@ -259,7 +270,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Просит страницу прочитать blob/http/data и отдать байты мосту. */
+    /** РџСЂРѕСЃРёС‚ СЃС‚СЂР°РЅРёС†Сѓ РїСЂРѕС‡РёС‚Р°С‚СЊ blob/http/data Рё РѕС‚РґР°С‚СЊ Р±Р°Р№С‚С‹ РјРѕСЃС‚Сѓ. */
     private fun saveFromUrl(url: String, share: Boolean) {
         val quoted = org.json.JSONObject.quote(url)
         web.evaluateJavascript(
@@ -272,7 +283,7 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
-    /** JS-хелпер: читает blob/http/data и возвращает dataURL + mime + имя. */
+    /** JS-С…РµР»РїРµСЂ: С‡РёС‚Р°РµС‚ blob/http/data Рё РІРѕР·РІСЂР°С‰Р°РµС‚ dataURL + mime + РёРјСЏ. */
     private fun injectSaver() {
         val js = """
             (function(){
@@ -314,10 +325,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Слежение за ответами агента. Точных селекторов DSH не публикует, поэтому
-     * пробуем набор типовых, а в крайнем случае — прирост текста основного
-     * контейнера. Решение «уведомлять или нет» принимает Kotlin: только когда
-     * приложение не на переднем плане, с дедупом и паузой.
+     * РЎР»РµР¶РµРЅРёРµ Р·Р° РѕС‚РІРµС‚Р°РјРё Р°РіРµРЅС‚Р°. РўРѕС‡РЅС‹С… СЃРµР»РµРєС‚РѕСЂРѕРІ DSH РЅРµ РїСѓР±Р»РёРєСѓРµС‚, РїРѕСЌС‚РѕРјСѓ
+     * РїСЂРѕР±СѓРµРј РЅР°Р±РѕСЂ С‚РёРїРѕРІС‹С…, Р° РІ РєСЂР°Р№РЅРµРј СЃР»СѓС‡Р°Рµ вЂ” РїСЂРёСЂРѕСЃС‚ С‚РµРєСЃС‚Р° РѕСЃРЅРѕРІРЅРѕРіРѕ
+     * РєРѕРЅС‚РµР№РЅРµСЂР°. Р РµС€РµРЅРёРµ В«СѓРІРµРґРѕРјР»СЏС‚СЊ РёР»Рё РЅРµС‚В» РїСЂРёРЅРёРјР°РµС‚ Kotlin: С‚РѕР»СЊРєРѕ РєРѕРіРґР°
+     * РїСЂРёР»РѕР¶РµРЅРёРµ РЅРµ РЅР° РїРµСЂРµРґРЅРµРј РїР»Р°РЅРµ, СЃ РґРµРґСѓРїРѕРј Рё РїР°СѓР·РѕР№.
      */
     private fun injectReplyWatcher() {
         val js = """
@@ -367,7 +378,7 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
-    /** Диагностика селекторов: пишем в logcat по долгому нажатию «⋯». */
+    /** Р”РёР°РіРЅРѕСЃС‚РёРєР° СЃРµР»РµРєС‚РѕСЂРѕРІ: РїРёС€РµРј РІ logcat РїРѕ РґРѕР»РіРѕРјСѓ РЅР°Р¶Р°С‚РёСЋ В«в‹ЇВ». */
     private fun dumpDomInfo() {
         val js = """
             (function(){
@@ -385,7 +396,7 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
         web.evaluateJavascript(js) { result ->
             android.util.Log.i("DshDom", "selectors: $result")
-            Toast.makeText(this, "Диагностика DOM записана в logcat", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Р”РёР°РіРЅРѕСЃС‚РёРєР° DOM Р·Р°РїРёСЃР°РЅР° РІ logcat", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -418,7 +429,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /** Пришёл прирост текста ответа: уведомляем, только если мы в фоне. */
+        /** РџСЂРёС€С‘Р» РїСЂРёСЂРѕСЃС‚ С‚РµРєСЃС‚Р° РѕС‚РІРµС‚Р°: СѓРІРµРґРѕРјР»СЏРµРј, С‚РѕР»СЊРєРѕ РµСЃР»Рё РјС‹ РІ С„РѕРЅРµ. */
         @JavascriptInterface
         fun replySeen(preview: String?) {
             val text = (preview ?: "").trim()
@@ -439,7 +450,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun reload() {
-        if (web.url == null) loadStart() else web.reload()
+        // Р’СЃРµРіРґР° РёРґС‘Рј РЅР° СЃС‚СЂР°РЅРёС†Сѓ /login: РїРѕСЃР»Рµ Р»СЋР±РѕРіРѕ СЂРµСЃС‚Р°СЂС‚Р° РєРѕРЅС‚РµР№РЅРµСЂР° DSH
+        // РІС‹РґР°С‘С‚ РЅРѕРІС‹Р№ launch-token, Рё РїРµСЂРµР·Р°РіСЂСѓР·РєР° СЃС‚Р°СЂРѕРіРѕ Р°РґСЂРµСЃР° СЃ ?token=
+        // СѓРїРёСЂР°РµС‚СЃСЏ РІ "dsh web authentication required".
+        loadStart()
+    }
+
+    /**
+     * РЎС‚СЂР°С…РѕРІРєР°: РµСЃР»Рё DSH РІСЃС‘ Р¶Рµ РїРѕРєР°Р·Р°Р» СЌРєСЂР°РЅ В«authentication requiredВ»
+     * (РїСЂРѕС‚СѓС…С€РёР№ С‚РѕРєРµРЅ), РѕРґРёРЅ СЂР°Р· РјРѕР»С‡Р° РїРµСЂРµР·Р°РіСЂСѓР¶Р°РµРј РІС…РѕРґ РїРѕ-РЅРѕРІРѕР№.
+     */
+    private fun recoverStaleToken() {
+        val now = System.currentTimeMillis()
+        if (now - lastRecovery < 15000) return
+        lastRecovery = now
+        loadStart()
     }
 
     private fun askExternal(url: Uri) {
@@ -457,9 +482,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Диалог входа. Первый запуск спрашивает только логин и пароль, причём поля
-     * пустые — ничего не подставляем. Адрес сервера живёт в настройках («⋯»),
-     * чтобы его нельзя было случайно испортить.
+     * Р”РёР°Р»РѕРі РІС…РѕРґР°. РџРµСЂРІС‹Р№ Р·Р°РїСѓСЃРє СЃРїСЂР°С€РёРІР°РµС‚ С‚РѕР»СЊРєРѕ Р»РѕРіРёРЅ Рё РїР°СЂРѕР»СЊ, РїСЂРёС‡С‘Рј РїРѕР»СЏ
+     * РїСѓСЃС‚С‹Рµ вЂ” РЅРёС‡РµРіРѕ РЅРµ РїРѕРґСЃС‚Р°РІР»СЏРµРј. РђРґСЂРµСЃ СЃРµСЂРІРµСЂР° Р¶РёРІС‘С‚ РІ РЅР°СЃС‚СЂРѕР№РєР°С… (В«в‹ЇВ»),
+     * С‡С‚РѕР±С‹ РµРіРѕ РЅРµР»СЊР·СЏ Р±С‹Р»Рѕ СЃР»СѓС‡Р°Р№РЅРѕ РёСЃРїРѕСЂС‚РёС‚СЊ.
      */
     private fun showLoginDialog(firstRun: Boolean) {
         val container = LinearLayout(this).apply {
@@ -486,7 +511,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(userField)
         container.addView(passField)
 
-        // Когда вход уже сохранён — даём кнопку проверки уведомлений.
+        // РљРѕРіРґР° РІС…РѕРґ СѓР¶Рµ СЃРѕС…СЂР°РЅС‘РЅ вЂ” РґР°С‘Рј РєРЅРѕРїРєСѓ РїСЂРѕРІРµСЂРєРё СѓРІРµРґРѕРјР»РµРЅРёР№.
         if (!firstRun) {
             container.addView(
                 android.widget.Button(this).apply {
@@ -511,7 +536,7 @@ class MainActivity : AppCompatActivity() {
                     offline.visibility = View.VISIBLE
                 }
             }
-        // Выход доступен только когда вход уже сохранён.
+        // Р’С‹С…РѕРґ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РєРѕРіРґР° РІС…РѕРґ СѓР¶Рµ СЃРѕС…СЂР°РЅС‘РЅ.
         if (!firstRun) builder.setNeutralButton(R.string.logout) { _, _ -> confirmLogout() }
         val dialog = builder.create()
 
@@ -548,7 +573,7 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    /** Выход: чистим сохранённые креды, cookie DSH и кэш страницы. */
+    /** Р’С‹С…РѕРґ: С‡РёСЃС‚РёРј СЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РєСЂРµРґС‹, cookie DSH Рё РєСЌС€ СЃС‚СЂР°РЅРёС†С‹. */
     private fun confirmLogout() {
         AlertDialog.Builder(this)
             .setTitle(R.string.logout_title)
@@ -574,7 +599,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         inForeground = true
-        // Вернулись в приложение — постоянный индикатор больше не нужен.
+        // Р’РµСЂРЅСѓР»РёСЃСЊ РІ РїСЂРёР»РѕР¶РµРЅРёРµ вЂ” РїРѕСЃС‚РѕСЏРЅРЅС‹Р№ РёРЅРґРёРєР°С‚РѕСЂ Р±РѕР»СЊС€Рµ РЅРµ РЅСѓР¶РµРЅ.
         stopService(Intent(this, LinkService::class.java))
     }
 
@@ -582,7 +607,7 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         inForeground = false
         CookieManager.getInstance().flush()
-        // Уходим в фон: держим процесс живым, чтобы наблюдение за ответами работало.
+        // РЈС…РѕРґРёРј РІ С„РѕРЅ: РґРµСЂР¶РёРј РїСЂРѕС†РµСЃСЃ Р¶РёРІС‹Рј, С‡С‚РѕР±С‹ РЅР°Р±Р»СЋРґРµРЅРёРµ Р·Р° РѕС‚РІРµС‚Р°РјРё СЂР°Р±РѕС‚Р°Р»Рѕ.
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 startForegroundService(Intent(this, LinkService::class.java))
