@@ -5,16 +5,6 @@
     android:layout_height="match_parent"
     android:background="?android:attr/colorBackground">
 
-    <!-- Фон рисует Android, WebView сверху прозрачный: так обои не зависят от CSS сайта
-         и не просвечивают сквозь панели/настройки. -->
-    <ImageView
-        android:id="@+id/wallpaper"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:contentDescription="@null"
-        android:scaleType="centerCrop"
-        android:src="@drawable/wallpaper" />
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"

@@ -194,7 +194,6 @@ class MainActivity : AppCompatActivity() {
                 injectSaver()
                 injectReplyWatcher()
                 applyCompactUi()
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ dumpWallCandidates() }, 6000L)
                 injectWallpaper()
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
@@ -349,20 +348,36 @@ class MainActivity : AppCompatActivity() {
      * (only elements larger than half the viewport), re-applying on mutation.
      */
     private fun injectWallpaper() {
-        // Фон рисует ImageView под WebView (activity_main.xml). Прозрачим ТОЛЬКО
-        // контейнеры области чата (классы из реального DOM: wSkVaW_*, EvIC1a_*),
-        // чтобы обои были видны за сообщениями, а панели и настройки остались плотными.
+        val dataUrl = try {
+            val bytes = assets.open("wallpaper.jpg").readBytes()
+            "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            android.util.Log.w("DshApp", "wallpaper asset missing: " + e)
+            return
+        }
+        // Обои ставим фоном на html, а прозрачными держим ТОЛЬКО контейнеры области чата
+        // (классы из реального DOM: wSkVaW_*, EvIC1a_*). Панели и настройки остаются
+        // плотными, поэтому текст читается, а обои видны за сообщениями.
         val js = """
             (function(){
-              var CHAT = /(wSkVaW_|EvIC1a_)/;
-              function clear() {
+              var url = '""".trimIndent() + dataUrl + """';
+              // wSkVaW_/EvIC1a_ — область переписки, pI_x6G_* — каркас, у frame был плотный фон
+              var CHAT = /(wSkVaW_|EvIC1a_|pI_x6G_frame|pI_x6G_centerCol|pI_x6G_mainPanel)/;
+
+              function paint() {
                 var html = document.documentElement;
-                html.style.setProperty('background', 'transparent', 'important');
+                html.style.setProperty(
+                  'background-image',
+                  'linear-gradient(rgba(9, 12, 17, 0.62), rgba(9, 12, 17, 0.62)), url("' + url + '")',
+                  'important'
+                );
+                html.style.setProperty('background-repeat', 'repeat, repeat', 'important');
+                html.style.setProperty('background-size', 'auto, 340px auto', 'important');
+                html.style.setProperty('background-position', 'center, center', 'important');
+                html.style.setProperty('background-attachment', 'fixed, fixed', 'important');
                 if (document.body) {
                   document.body.style.setProperty('background', 'transparent', 'important');
                 }
-                var old = document.getElementById('dsh-wall-bg');
-                if (old) old.remove();
                 var nodes = document.querySelectorAll('div[class]');
                 for (var i = 0; i < nodes.length; i++) {
                   var el = nodes[i];
@@ -378,47 +393,24 @@ class MainActivity : AppCompatActivity() {
                 }
               }
               if (!window.__dshWallTimer) {
-                window.__dshWallTimer = setInterval(clear, 1200);
+                window.__dshWallTimer = setInterval(paint, 1200);
                 if (window.MutationObserver) {
                   var pending = false;
                   new MutationObserver(function(){
                     if (pending) return;
                     pending = true;
-                    setTimeout(function(){ pending = false; clear(); }, 300);
+                    setTimeout(function(){ pending = false; paint(); }, 300);
                   }).observe(document.documentElement, { childList: true, subtree: true });
                 }
               }
-              clear();
+              paint();
+              var cs = getComputedStyle(document.documentElement);
+              return 'html bg=' + (cs.backgroundColor || '?') +
+                     ' imgLen=' + (cs.backgroundImage || '').length +
+                     ' bodyBg=' + (document.body ? getComputedStyle(document.body).backgroundColor : '?');
             })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
-    }
-
-    /** Диагностика: крупные контейнеры страницы с классами и фоном (для настройки обоев). */
-    private fun dumpWallCandidates() {
-        val js = """
-            (function(){
-              var out = [];
-              var all = document.querySelectorAll('div, main, section, aside');
-              for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                var r = el.getBoundingClientRect();
-                var area = r.width * r.height;
-                if (area < window.innerWidth * window.innerHeight * 0.25) continue;
-                var cs = getComputedStyle(el);
-                out.push({
-                  tag: el.tagName.toLowerCase(),
-                  cls: (typeof el.className === 'string' ? el.className : '').slice(0, 60),
-                  id: (el.id || '').slice(0, 24),
-                  w: Math.round(r.width), h: Math.round(r.height),
-                  bg: cs.backgroundColor
-                });
-              }
-              out.sort(function(a,b){ return (b.w*b.h) - (a.w*a.h); });
-              return JSON.stringify(out.slice(0, 14));
-            })();
-        """.trimIndent()
-        web.evaluateJavascript(js) { res -> android.util.Log.i("DshWall", "candidates: " + res) }
     }
 
     private fun injectReplyWatcher() {
