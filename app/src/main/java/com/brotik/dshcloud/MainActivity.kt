@@ -567,8 +567,13 @@ class MainActivity : AppCompatActivity() {
     /** Компактный composer: подписи у кнопок пресета/памяти скрыты, иконки остаются. */
     private fun applyCompactUi() {
         val enabled = prefs.getBoolean(KEY_COMPACT, true)
-        web.evaluateJavascript(CompactUi.script(enabled)) { result ->
-            android.util.Log.i("DshApp", "compact ui: " + result)
+        web.evaluateJavascript(CompactUi.script(enabled), null)
+        // SPA рисует composer не сразу: повторяем, чтобы подписи ушли и после дорисовки.
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        for (delay in longArrayOf(2000L, 4000L, 8000L)) {
+            handler.postDelayed({
+                web.evaluateJavascript(CompactUi.script(prefs.getBoolean(KEY_COMPACT, true)), null)
+            }, delay)
         }
     }
 
