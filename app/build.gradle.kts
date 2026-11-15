@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -13,8 +13,8 @@ android {
         applicationId = "com.brotik.dshcloud"
         minSdk = 24
         targetSdk = 35
-        versionCode = 11
-        versionName = "2.4"
+        versionCode = 12
+        versionName = "2.5"
     }
 
     val keystoreFile = rootProject.file("keystore.jks")
@@ -43,8 +43,8 @@ android {
             if (keystoreFile.exists()) signingConfig = signingConfigs.getByName("dsh")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        // РљР°Рє Рё РІ РґСЂСѓРіРёС… РїСЂРѕРµРєС‚Р°С… СЌС‚РѕР№ РјР°С€РёРЅС‹: РєР°С‚Р°Р»РѕРі release РёРЅРѕРіРґР° Р±Р»РѕРєРёСЂСѓРµС‚СЃСЏ
-        // СЃРёСЃС‚РµРјРЅС‹Рј С„РёР»СЊС‚СЂРѕРј, РїРѕСЌС‚РѕРјСѓ APK СЃРѕР±РёСЂР°РµС‚СЃСЏ РІ СЃРІРѕР№ РєР°С‚Р°Р»РѕРі (app-prod.apk).
+        // Р С™Р В°Р С” Р С‘ Р Р† Р Т‘РЎР‚РЎС“Р С–Р С‘РЎвЂ¦ Р С—РЎР‚Р С•Р ВµР С”РЎвЂљР В°РЎвЂ¦ РЎРЊРЎвЂљР С•Р в„– Р СР В°РЎв‚¬Р С‘Р Р…РЎвЂ№: Р С”Р В°РЎвЂљР В°Р В»Р С•Р С– release Р С‘Р Р…Р С•Р С–Р Т‘Р В° Р В±Р В»Р С•Р С”Р С‘РЎР‚РЎС“Р ВµРЎвЂљРЎРѓРЎРЏ
+        // РЎРѓР С‘РЎРѓРЎвЂљР ВµР СР Р…РЎвЂ№Р С РЎвЂћР С‘Р В»РЎРЉРЎвЂљРЎР‚Р С•Р С, Р С—Р С•РЎРЊРЎвЂљР С•Р СРЎС“ APK РЎРѓР С•Р В±Р С‘РЎР‚Р В°Р ВµРЎвЂљРЎРѓРЎРЏ Р Р† РЎРѓР Р†Р С•Р в„– Р С”Р В°РЎвЂљР В°Р В»Р С•Р С– (app-prod.apk).
         create("prod") {
             initWith(getByName("release"))
             isDebuggable = false

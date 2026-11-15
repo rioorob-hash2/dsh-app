@@ -192,6 +192,8 @@ class MainActivity : AppCompatActivity() {
                 CookieManager.getInstance().flush()
                 injectSaver()
                 injectReplyWatcher()
+                applyCompactUi()
+                injectWallpaper()
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
                 ) { raw ->
@@ -337,6 +339,66 @@ class MainActivity : AppCompatActivity() {
      * Р С”Р С•Р Р…РЎвЂљР ВµР в„–Р Р…Р ВµРЎР‚Р В°. Р В Р ВµРЎв‚¬Р ВµР Р…Р С‘Р Вµ Р’В«РЎС“Р Р†Р ВµР Т‘Р С•Р СР В»РЎРЏРЎвЂљРЎРЉ Р С‘Р В»Р С‘ Р Р…Р ВµРЎвЂљР’В» Р С—РЎР‚Р С‘Р Р…Р С‘Р СР В°Р ВµРЎвЂљ Kotlin: РЎвЂљР С•Р В»РЎРЉР С”Р С• Р С”Р С•Р С–Р Т‘Р В°
      * Р С—РЎР‚Р С‘Р В»Р С•Р В¶Р ВµР Р…Р С‘Р Вµ Р Р…Р Вµ Р Р…Р В° Р С—Р ВµРЎР‚Р ВµР Т‘Р Р…Р ВµР С Р С—Р В»Р В°Р Р…Р Вµ, РЎРѓ Р Т‘Р ВµР Т‘РЎС“Р С—Р С•Р С Р С‘ Р С—Р В°РЎС“Р В·Р С•Р в„–.
      */
+    /**
+     * Wallpaper: a texture from assets behind the DSH page.
+     *
+     * The page paints opaque backdrops on a few full-size containers, so the
+     * injected script paints the texture on <html> and clears those backdrops
+     * (only elements larger than half the viewport), re-applying on mutation.
+     */
+    private fun injectWallpaper() {
+        val dataUrl = try {
+            val bytes = assets.open("wallpaper.jpg").readBytes()
+            "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            android.util.Log.w("DshApp", "wallpaper asset missing: " + e)
+            return
+        }
+        val js = """
+            (function(){
+              var url = '""".trimIndent() + dataUrl + """';
+              function opaque(bg) { return bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'; }
+              function paint() {
+                var root = document.documentElement;
+                root.style.setProperty('background-image', 'url("' + url + '")', 'important');
+                root.style.setProperty('background-size', 'cover', 'important');
+                root.style.setProperty('background-position', 'center', 'important');
+                root.style.setProperty('background-attachment', 'fixed', 'important');
+                if (document.body) {
+                  document.body.style.setProperty('background-color', 'transparent', 'important');
+                  document.body.style.setProperty('background-image', 'none', 'important');
+                }
+                var limit = window.innerWidth * window.innerHeight * 0.5;
+                var all = document.querySelectorAll('div');
+                for (var i = 0; i < all.length; i++) {
+                  var el = all[i];
+                  if (el.id === 'dsh-wall-layer') continue;
+                  var cs = getComputedStyle(el);
+                  if (!opaque(cs.backgroundColor)) continue;
+                  var r = el.getBoundingClientRect();
+                  if (r.width * r.height < limit) continue;
+                  el.style.setProperty('background-color', 'transparent', 'important');
+                }
+              }
+              var old = document.getElementById('dsh-wall-layer');
+              if (old) old.remove();
+              if (!window.__dshWallTimer) {
+                window.__dshWallTimer = setInterval(paint, 900);
+                if (window.MutationObserver) {
+                  var pending = false;
+                  new MutationObserver(function(){
+                    if (pending) return;
+                    pending = true;
+                    setTimeout(function(){ pending = false; paint(); }, 250);
+                  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+                }
+              }
+              paint();
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js, null)
+    }
+
     private fun injectReplyWatcher() {
         val js = """
             (function(){
@@ -502,6 +564,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Компактный composer: подписи у кнопок пресета/памяти скрыты, иконки остаются. */
+    private fun applyCompactUi() {
+        val enabled = prefs.getBoolean(KEY_COMPACT, true)
+        web.evaluateJavascript(CompactUi.script(enabled)) { result ->
+            android.util.Log.i("DshApp", "compact ui: " + result)
+        }
+    }
+
+    private fun toggleCompactUi() {
+        val next = !prefs.getBoolean(KEY_COMPACT, true)
+        prefs.edit().putBoolean(KEY_COMPACT, next).apply()
+        applyCompactUi()
+        Toast.makeText(
+            this,
+            if (next) "Компактные кнопки включены" else "Компактные кнопки выключены",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
     private fun askNotificationPermission() {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
         val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
@@ -635,6 +716,12 @@ class MainActivity : AppCompatActivity() {
         if (!firstRun) {
             container.addView(
                 android.widget.Button(this).apply {
+                    text = if (prefs.getBoolean(KEY_COMPACT, true)) "Компактные кнопки: вкл" else "Компактные кнопки: выкл"
+                    setOnClickListener { toggleCompactUi() }
+                },
+            )
+            container.addView(
+                android.widget.Button(this).apply {
                     text = getString(R.string.test_notification)
                     setOnClickListener {
                         Notifier.test(this@MainActivity)
@@ -763,6 +850,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_URL = "url"
         private const val KEY_USER = "user"
         private const val KEY_PASS = "pass"
+        private const val KEY_COMPACT = "compact_ui"
         private const val DEFAULT_URL = "https://dsh-cloud-production-706a3ba8.up.railway.app/login"
     }
 }
