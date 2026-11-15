@@ -148,7 +148,8 @@ class MainActivity : AppCompatActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
         }
-        web.setBackgroundColor(0xFF101418.toInt())
+        // Прозрачный WebView: под ним виден ImageView с обоями (activity_main.xml)
+        web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         // Renderer должен переживать уход в фон: иначе Javascript, следящий за ответом
         // агента, умрёт вместе с рендерером и уведомление не придёт.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -193,6 +194,7 @@ class MainActivity : AppCompatActivity() {
                 injectSaver()
                 injectReplyWatcher()
                 applyCompactUi()
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ dumpWallCandidates() }, 6000L)
                 injectWallpaper()
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
@@ -347,56 +349,76 @@ class MainActivity : AppCompatActivity() {
      * (only elements larger than half the viewport), re-applying on mutation.
      */
     private fun injectWallpaper() {
-        val dataUrl = try {
-            val bytes = assets.open("wallpaper.jpg").readBytes()
-            "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-        } catch (e: Exception) {
-            android.util.Log.w("DshApp", "wallpaper asset missing: " + e)
-            return
-        }
+        // Фон рисует ImageView под WebView (activity_main.xml). Прозрачим ТОЛЬКО
+        // контейнеры области чата (классы из реального DOM: wSkVaW_*, EvIC1a_*),
+        // чтобы обои были видны за сообщениями, а панели и настройки остались плотными.
         val js = """
             (function(){
-              var url = '""".trimIndent() + dataUrl + """';
-              function opaque(bg) { return bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'; }
-              function paint() {
-                var root = document.documentElement;
-                root.style.setProperty('background-image', 'url("' + url + '")', 'important');
-                root.style.setProperty('background-size', 'cover', 'important');
-                root.style.setProperty('background-position', 'center', 'important');
-                root.style.setProperty('background-attachment', 'fixed', 'important');
+              var CHAT = /(wSkVaW_|EvIC1a_)/;
+              function clear() {
+                var html = document.documentElement;
+                html.style.setProperty('background', 'transparent', 'important');
                 if (document.body) {
-                  document.body.style.setProperty('background-color', 'transparent', 'important');
-                  document.body.style.setProperty('background-image', 'none', 'important');
+                  document.body.style.setProperty('background', 'transparent', 'important');
                 }
-                var limit = window.innerWidth * window.innerHeight * 0.5;
-                var all = document.querySelectorAll('div');
-                for (var i = 0; i < all.length; i++) {
-                  var el = all[i];
-                  if (el.id === 'dsh-wall-layer') continue;
+                var old = document.getElementById('dsh-wall-bg');
+                if (old) old.remove();
+                var nodes = document.querySelectorAll('div[class]');
+                for (var i = 0; i < nodes.length; i++) {
+                  var el = nodes[i];
+                  var cls = typeof el.className === 'string' ? el.className : '';
+                  if (!CHAT.test(cls)) continue;
                   var cs = getComputedStyle(el);
-                  if (!opaque(cs.backgroundColor)) continue;
-                  var r = el.getBoundingClientRect();
-                  if (r.width * r.height < limit) continue;
-                  el.style.setProperty('background-color', 'transparent', 'important');
+                  if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+                    el.style.setProperty('background-color', 'transparent', 'important');
+                  }
+                  if (cs.backgroundImage && cs.backgroundImage !== 'none') {
+                    el.style.setProperty('background-image', 'none', 'important');
+                  }
                 }
               }
-              var old = document.getElementById('dsh-wall-layer');
-              if (old) old.remove();
               if (!window.__dshWallTimer) {
-                window.__dshWallTimer = setInterval(paint, 900);
+                window.__dshWallTimer = setInterval(clear, 1200);
                 if (window.MutationObserver) {
                   var pending = false;
                   new MutationObserver(function(){
                     if (pending) return;
                     pending = true;
-                    setTimeout(function(){ pending = false; paint(); }, 250);
-                  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+                    setTimeout(function(){ pending = false; clear(); }, 300);
+                  }).observe(document.documentElement, { childList: true, subtree: true });
                 }
               }
-              paint();
+              clear();
             })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
+    }
+
+    /** Диагностика: крупные контейнеры страницы с классами и фоном (для настройки обоев). */
+    private fun dumpWallCandidates() {
+        val js = """
+            (function(){
+              var out = [];
+              var all = document.querySelectorAll('div, main, section, aside');
+              for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var r = el.getBoundingClientRect();
+                var area = r.width * r.height;
+                if (area < window.innerWidth * window.innerHeight * 0.25) continue;
+                var cs = getComputedStyle(el);
+                out.push({
+                  tag: el.tagName.toLowerCase(),
+                  cls: (typeof el.className === 'string' ? el.className : '').slice(0, 60),
+                  id: (el.id || '').slice(0, 24),
+                  w: Math.round(r.width), h: Math.round(r.height),
+                  bg: cs.backgroundColor
+                });
+              }
+              out.sort(function(a,b){ return (b.w*b.h) - (a.w*a.h); });
+              return JSON.stringify(out.slice(0, 14));
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js) { res -> android.util.Log.i("DshWall", "candidates: " + res) }
     }
 
     private fun injectReplyWatcher() {
