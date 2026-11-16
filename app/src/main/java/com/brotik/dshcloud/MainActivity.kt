@@ -58,9 +58,6 @@ class MainActivity : AppCompatActivity() {
     private var lastRecovery = 0L
     /** Запрос WebView на микрофон, ждущий ответа системы. */
     private var pendingAudioRequest: PermissionRequest? = null
-    /** Системный синтез речи: в WebView нет speechSynthesis, подменяем его. */
-    private var tts: android.speech.tts.TextToSpeech? = null
-    private var ttsReady = false
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -100,7 +97,6 @@ class MainActivity : AppCompatActivity() {
         askNotificationPermission()
 
         applyInsets()
-        initTts()
         setupWebView()
         // Кэш чистим ОДИН раз после обновления приложения, а не на каждом старте:
         // постоянный LOAD_NO_CACHE ломал клиентские плагины (кнопка озвучки пропадала).
@@ -212,7 +208,6 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                injectTtsPolyfill()
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -221,7 +216,6 @@ class MainActivity : AppCompatActivity() {
                 injectSaver()
                 injectReplyWatcher()
                 applyCompactUi()
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ dumpTtsInfo() }, 7000L)
                 injectWallpaper()
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
@@ -463,337 +457,6 @@ class MainActivity : AppCompatActivity() {
               return 'html bg=' + (cs.backgroundColor || '?') +
                      ' imgLen=' + (cs.backgroundImage || '').length +
                      ' bodyBg=' + (document.body ? getComputedStyle(document.body).backgroundColor : '?');
-            })();
-        """.trimIndent()
-        web.evaluateJavascript(js, null)
-    }
-
-    /** Диагностика озвучки: есть ли speechSynthesis и кнопки плагина TTS в правом нижнем углу. */
-    private fun dumpTtsInfo() {
-        val js = """
-            (function(){
-              var ls = [];
-              try {
-                for (var i = 0; i < localStorage.length && i < 60; i++) {
-                  var k = localStorage.key(i);
-                  var v = localStorage.getItem(k) || '';
-                  if (/voice|speech|asr|whisper|lang|tts|mic|stt/i.test(k)) {
-                    ls.push(k + '=' + v.slice(0, 120));
-                  }
-                }
-              } catch (e) {}
-              var out = {
-                ls: ls,
-                lang: navigator.language,
-                langBefore: window.__dshLangBefore || '?',
-                speech: (typeof window.speechSynthesis !== 'undefined'),
-                voices: (window.speechSynthesis && window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices().length : -1),
-                ttsButtons: [],
-                floating: []
-              };
-              var all = document.querySelectorAll('button, [role="button"], a, div[class]');
-              for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                var r = el.getBoundingClientRect();
-                if (r.width === 0 || r.height === 0) continue;
-                var txt = (el.innerText || '').trim();
-                var aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
-                if (/speech|озвуч|tts|voice|голос/i.test(aria + ' ' + txt) && out.ttsButtons.length < 8) {
-                  out.ttsButtons.push({a: aria.slice(0, 40), t: txt.slice(0, 20), x: Math.round(r.x), y: Math.round(r.y)});
-                }
-                if (r.width < 90 && r.height < 90 && r.right > window.innerWidth - 120 && r.top > window.innerHeight * 0.6 && out.floating.length < 10) {
-                  out.floating.push({t: txt.slice(0, 14), x: Math.round(r.x), y: Math.round(r.y)});
-                }
-              }
-              return JSON.stringify(out);
-            })();
-        """.trimIndent()
-        web.evaluateJavascript(js) { res -> android.util.Log.i("DshTts", "info: " + res) }
-    }
-
-    /** Создаёт системный TTS и логирует, доступен ли движок и русский голос. */
-    private fun initTts() {
-        tts = android.speech.tts.TextToSpeech(this) { status ->
-            ttsReady = status == android.speech.tts.TextToSpeech.SUCCESS
-            if (!ttsReady) {
-                android.util.Log.w("DshApp", "tts init failed: " + status)
-                return@TextToSpeech
-            }
-            tts?.setAudioAttributes(
-                android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            val ru = java.util.Locale("ru", "RU")
-            val avail = tts?.isLanguageAvailable(ru) ?: -99
-            val setResult = tts?.setLanguage(if (avail >= 0) ru else java.util.Locale.getDefault())
-            android.util.Log.i(
-                "DshApp",
-                "tts ready: engine=" + (tts?.defaultEngine ?: "?") +
-                    " ruAvail=" + avail + " langSet=" + setResult +
-                    " voices=" + (tts?.voices?.size ?: 0),
-            )
-            if (avail < 0) {
-                android.util.Log.w("DshApp", "tts: русский голос недоступен — нужны данные языка Google TTS")
-            }
-            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    android.util.Log.i("DshApp", "tts start: " + utteranceId)
-                }
-
-                override fun onDone(utteranceId: String?) {
-                    android.util.Log.i("DshApp", "tts done: " + utteranceId)
-                }
-
-                override fun onError(utteranceId: String?) {
-                    android.util.Log.w("DshApp", "tts error: " + utteranceId)
-                }
-
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    android.util.Log.w("DshApp", "tts error: " + utteranceId + " code=" + errorCode)
-                }
-            })
-        }
-    }
-
-    /** Вставка распознанного текста в поле ввода страницы. */
-    private fun insertDictation(text: String) {
-        val esc = org.json.JSONObject.quote(text)
-        val js = """
-            (function(){
-              var el = document.activeElement;
-              var isField = el && (el.tagName === 'TEXTAREA' ||
-                (el.isContentEditable) ||
-                (el.tagName === 'INPUT' && el.type === 'text'));
-              if (!isField) {
-                var cands = document.querySelectorAll('textarea, [contenteditable="true"]');
-                for (var i = 0; i < cands.length; i++) {
-                  if (cands[i].offsetParent !== null) { el = cands[i]; break; }
-                }
-              }
-              if (!el) return 'no field';
-              el.focus();
-              var text = $esc;
-              if (el.isContentEditable) {
-                document.execCommand('insertText', false, text);
-              } else {
-                var start = el.selectionStart || el.value.length;
-                var end = el.selectionEnd || el.value.length;
-                el.value = el.value.slice(0, start) + text + el.value.slice(end);
-                el.selectionStart = el.selectionEnd = start + text.length;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-              }
-              return 'ok';
-            })();
-        """.trimIndent()
-        web.evaluateJavascript(js) { res ->
-            android.util.Log.i("DshApp", "dictation insert: " + res)
-            if (res != null && res.contains("no field")) {
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("dictation", text))
-                Toast.makeText(this, "Нет поля ввода — текст скопирован", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private val dictation = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode != RESULT_OK) return@registerForActivityResult
-        val list = result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
-        val text = list?.firstOrNull()?.trim().orEmpty()
-        if (text.isEmpty()) {
-            Toast.makeText(this, "Ничего не распознано", Toast.LENGTH_SHORT).show()
-            return@registerForActivityResult
-        }
-        insertDictation(text)
-    }
-
-    /** Системная диктовка на русском (не зависит от плагина). */
-    private fun startDictation() {
-        val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU")
-            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Говори по-русски")
-        }
-        try {
-            dictation.launch(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Нет системного распознавателя речи", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    /** Читает последний ответ агента системным TTS (без плагина). Повторное нажатие — стоп. */
-    private fun readLastAnswer() {
-        if (!ttsReady) {
-            Toast.makeText(this, "TTS не готов: нет движка или языка", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (tts?.isSpeaking == true) {
-            tts?.stop()
-            Toast.makeText(this, "Чтение остановлено", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val js = """
-            (function(){
-              var nodes = document.querySelectorAll('[class*="vHCAGq_root"], [class*="EvIC1a_flowItem"]');
-              var best = '';
-              for (var i = 0; i < nodes.length; i++) {
-                var t = (nodes[i].innerText || '').trim();
-                if (t.length > best.length) best = t;
-              }
-              if (!best && document.body) best = (document.body.innerText || '').trim();
-              return JSON.stringify(best.slice(-3000));
-            })();
-        """.trimIndent()
-        web.evaluateJavascript(js) { raw ->
-            val text = try {
-                (org.json.JSONTokener(raw ?: "").nextValue() as? String) ?: ""
-            } catch (e: Exception) {
-                ""
-            }
-            val clean = text.trim()
-            if (clean.isBlank()) {
-                Toast.makeText(this, "Не нашёл текст ответа на странице", Toast.LENGTH_LONG).show()
-                return@evaluateJavascript
-            }
-            tts?.speak(clean, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-read")
-            Toast.makeText(this, "Читаю " + clean.length + " символов", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    /** Нативная проверка озвучки: говорит тестовую фразу и показывает параметры движка. */
-    private fun testTts() {
-        val engine = try { tts?.defaultEngine ?: "?" } catch (e: Exception) { "?" }
-        val ru = java.util.Locale("ru", "RU")
-        val avail = try { tts?.isLanguageAvailable(ru) ?: -99 } catch (e: Exception) { -99 }
-        val voices = try { tts?.voices?.size ?: 0 } catch (e: Exception) { 0 }
-        if (!ttsReady) {
-            Toast.makeText(
-                this,
-                "TTS не готов (init failed). Движок: $engine",
-                Toast.LENGTH_LONG,
-            ).show()
-            return
-        }
-        // Тон через ToneGenerator: проверяет сам аудиовыход (не TTS).
-        try {
-            val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 90)
-            tone.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 700)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ tone.release() }, 1200)
-        } catch (e: Exception) {
-            android.util.Log.w("DshApp", "tone failed: " + e.message)
-        }
-        val queued = tts?.speak(
-            "Проверка голоса. Раз, два, три.",
-            android.speech.tts.TextToSpeech.QUEUE_FLUSH,
-            null,
-            "dsh-tts-test",
-        ) ?: -1
-        Toast.makeText(
-            this,
-            "TTS: движок $engine, ru=$avail, голосов=$voices, speak=$queued",
-            Toast.LENGTH_LONG,
-        ).show()
-    }
-
-    /** Мост Android TextToSpeech для полифилла speechSynthesis. */
-    inner class TtsBridge {
-        @JavascriptInterface
-        fun speak(text: String) {
-            if (!ttsReady) {
-                android.util.Log.w("DshApp", "tts speak skipped: engine not ready")
-                return
-            }
-            if (text.isBlank()) return
-            tts?.stop()
-            val queued = tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-tts") ?: -1
-            android.util.Log.i("DshApp", "tts speak: len=" + text.length + " queued=" + queued)
-        }
-
-        @JavascriptInterface
-        fun stop() {
-            tts?.stop()
-        }
-
-        @JavascriptInterface
-        fun ready(): Boolean = ttsReady
-    }
-
-    /**
-     * WebView не поддерживает Web Speech API: window.speechSynthesis отсутствует, и плагин озвучки
-     * из-за этого не рисует кнопку. Подставляем минимальную реализацию поверх Android TTS.
-     * Инжектится в onPageStarted — раньше клиентских бандлов.
-     */
-    private fun injectTtsPolyfill() {
-        val js = """
-            (function(){
-              if (window.__dshTtsPolyfill) return;
-              window.__dshTtsPolyfill = true;
-              // Системная локаль устройства — ru-UA; клиентские плагины (распознавание речи, TTS)
-              // ожидают ru-RU и иначе откатываются на английский.
-              try {
-                var before = navigator.language;
-                Object.defineProperty(navigator, 'language', { get: function(){ return 'ru-RU'; }, configurable: true });
-                Object.defineProperty(navigator, 'languages', { get: function(){ return ['ru-RU', 'ru']; }, configurable: true });
-                window.__dshLangBefore = before;
-              } catch (e) {}
-
-              if ('speechSynthesis' in window && window.speechSynthesis) return;
-
-              function Utterance(text) {
-                this.text = text || '';
-                this.lang = 'ru-RU';
-                this.rate = 1;
-                this.pitch = 1;
-                this.volume = 1;
-                this.voice = null;
-                this.onstart = null;
-                this.onend = null;
-                this.onerror = null;
-                this.onboundary = null;
-                this.onpause = null;
-                this.onresume = null;
-              }
-              window.SpeechSynthesisUtterance = window.SpeechSynthesisUtterance || Utterance;
-
-              var voices = [{
-                name: 'Android', lang: 'ru-RU', default: true, localService: true,
-                voiceURI: 'android-tts', 'default': true
-              }];
-
-              var synth = {
-                speaking: false, pending: false, paused: false,
-                onvoiceschanged: null,
-                getVoices: function(){ return voices.slice(); },
-                speak: function(u){
-                  var text = (u && u.text) ? String(u.text) : '';
-                  if (!text) return;
-                  synth.speaking = true;
-                  try { if (u && u.onstart) u.onstart({ type: 'start', utterance: u }); } catch (e) {}
-                  try { window.DshTts && window.DshTts.speak(text); } catch (e) {}
-                  // Длительность неизвестна: отдаём end через оценку по символам.
-                  var ms = Math.min(30000, Math.max(800, text.length * 70));
-                  setTimeout(function(){
-                    synth.speaking = false;
-                    try { if (u && u.onend) u.onend({ type: 'end', utterance: u }); } catch (e) {}
-                  }, ms);
-                },
-                cancel: function(){ synth.speaking = false; try { window.DshTts && window.DshTts.stop(); } catch (e) {} },
-                pause: function(){ synth.paused = true; try { window.DshTts && window.DshTts.stop(); } catch (e) {} },
-                resume: function(){ synth.paused = false; }
-              };
-              try {
-                Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true, writable: true });
-              } catch (e) {
-                window.speechSynthesis = synth;
-              }
-              setTimeout(function(){
-                try { if (synth.onvoiceschanged) synth.onvoiceschanged({ type: 'voiceschanged' }); } catch (e) {}
-                try { window.dispatchEvent(new Event('voiceschanged')); } catch (e) {}
-              }, 300);
             })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
@@ -1123,24 +786,6 @@ class MainActivity : AppCompatActivity() {
                 android.widget.Button(this).apply {
                     text = if (prefs.getBoolean(KEY_COMPACT, true)) "Компактные кнопки: вкл" else "Компактные кнопки: выкл"
                     setOnClickListener { toggleCompactUi() }
-                },
-            )
-            container.addView(
-                android.widget.Button(this).apply {
-                    text = "🎤 Диктовка по-русски"
-                    setOnClickListener { startDictation() }
-                },
-            )
-            container.addView(
-                android.widget.Button(this).apply {
-                    text = "📖 Прочитать последний ответ"
-                    setOnClickListener { readLastAnswer() }
-                },
-            )
-            container.addView(
-                android.widget.Button(this).apply {
-                    text = "🔊 Тест озвучки"
-                    setOnClickListener { testTts() }
                 },
             )
             container.addView(

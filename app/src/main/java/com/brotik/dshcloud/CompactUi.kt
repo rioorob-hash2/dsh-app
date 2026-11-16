@@ -36,6 +36,11 @@ object CompactUi {
                   chips[c].style.removeProperty('display');
                   delete chips[c].dataset.dshChipHidden;
                 }
+                var voices = document.querySelectorAll('[data-dsh-voice-hidden="1"]');
+                for (var v = 0; v < voices.length; v++) {
+                  voices[v].style.removeProperty('display');
+                  delete voices[v].dataset.dshVoiceHidden;
+                }
                 return 'off';
               }
 
@@ -90,7 +95,25 @@ object CompactUi {
                 }
               }
 
-              function apply(){ walk(document, 0); hideModelChip(); }
+              // Плавающая кнопка озвучки от плагина (🔊/🔇) — БРАТИК попросил убрать.
+              function hideVoiceButton(){
+                var nodes = document.querySelectorAll('button, [role="button"], [aria-label], [title]');
+                for (var i = 0; i < nodes.length; i++) {
+                  var el = nodes[i];
+                  if (el.dataset && el.dataset.dshVoiceHidden === '1') continue;
+                  var aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+                  var text = (el.innerText || '').trim();
+                  var isVoice = /озвуч|озвучиван|speech|tts|voice/i.test(aria) ||
+                                text === '🔊' || text === '🔇';
+                  if (!isVoice) continue;
+                  var r = el.getBoundingClientRect();
+                  if (r.height === 0 || r.height > 140) continue;
+                  el.dataset.dshVoiceHidden = '1';
+                  el.style.setProperty('display', 'none', 'important');
+                }
+              }
+
+              function apply(){ walk(document, 0); hideModelChip(); hideVoiceButton(); }
 
               apply();
               if (window.__dshCompactWatching) return 'applied:' + saved.length;
