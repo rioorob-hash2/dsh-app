@@ -58,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     private var lastRecovery = 0L
     /** Запрос WebView на микрофон, ждущий ответа системы. */
     private var pendingAudioRequest: PermissionRequest? = null
+    /** Системный синтез речи: в WebView нет speechSynthesis, подменяем его. */
+    private var tts: android.speech.tts.TextToSpeech? = null
+    private var ttsReady = false
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -197,12 +200,18 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                injectTtsPolyfill()
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 android.util.Log.i("DshApp", "onPageFinished: " + url)
                 CookieManager.getInstance().flush()
                 injectSaver()
                 injectReplyWatcher()
                 applyCompactUi()
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ dumpTtsInfo() }, 7000L)
                 injectWallpaper()
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
@@ -444,6 +453,122 @@ class MainActivity : AppCompatActivity() {
               return 'html bg=' + (cs.backgroundColor || '?') +
                      ' imgLen=' + (cs.backgroundImage || '').length +
                      ' bodyBg=' + (document.body ? getComputedStyle(document.body).backgroundColor : '?');
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js, null)
+    }
+
+    /** Диагностика озвучки: есть ли speechSynthesis и кнопки плагина TTS в правом нижнем углу. */
+    private fun dumpTtsInfo() {
+        val js = """
+            (function(){
+              var out = {
+                speech: (typeof window.speechSynthesis !== 'undefined'),
+                voices: (window.speechSynthesis && window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices().length : -1),
+                ttsButtons: [],
+                floating: []
+              };
+              var all = document.querySelectorAll('button, [role="button"], a, div[class]');
+              for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                var txt = (el.innerText || '').trim();
+                var aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+                if (/speech|озвуч|tts|voice|голос/i.test(aria + ' ' + txt) && out.ttsButtons.length < 8) {
+                  out.ttsButtons.push({a: aria.slice(0, 40), t: txt.slice(0, 20), x: Math.round(r.x), y: Math.round(r.y)});
+                }
+                if (r.width < 90 && r.height < 90 && r.right > window.innerWidth - 120 && r.top > window.innerHeight * 0.6 && out.floating.length < 10) {
+                  out.floating.push({t: txt.slice(0, 14), x: Math.round(r.x), y: Math.round(r.y)});
+                }
+              }
+              return JSON.stringify(out);
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js) { res -> android.util.Log.i("DshTts", "info: " + res) }
+    }
+
+    /** Мост Android TextToSpeech для полифилла speechSynthesis. */
+    inner class TtsBridge {
+        @JavascriptInterface
+        fun speak(text: String) {
+            if (!ttsReady || text.isBlank()) return
+            tts?.stop()
+            tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-tts")
+        }
+
+        @JavascriptInterface
+        fun stop() {
+            tts?.stop()
+        }
+
+        @JavascriptInterface
+        fun ready(): Boolean = ttsReady
+    }
+
+    /**
+     * WebView не поддерживает Web Speech API: window.speechSynthesis отсутствует, и плагин озвучки
+     * из-за этого не рисует кнопку. Подставляем минимальную реализацию поверх Android TTS.
+     * Инжектится в onPageStarted — раньше клиентских бандлов.
+     */
+    private fun injectTtsPolyfill() {
+        val js = """
+            (function(){
+              if (window.__dshTtsPolyfill) return;
+              window.__dshTtsPolyfill = true;
+              if ('speechSynthesis' in window && window.speechSynthesis) return;
+
+              function Utterance(text) {
+                this.text = text || '';
+                this.lang = 'ru-RU';
+                this.rate = 1;
+                this.pitch = 1;
+                this.volume = 1;
+                this.voice = null;
+                this.onstart = null;
+                this.onend = null;
+                this.onerror = null;
+                this.onboundary = null;
+                this.onpause = null;
+                this.onresume = null;
+              }
+              window.SpeechSynthesisUtterance = window.SpeechSynthesisUtterance || Utterance;
+
+              var voices = [{
+                name: 'Android', lang: 'ru-RU', default: true, localService: true,
+                voiceURI: 'android-tts', 'default': true
+              }];
+
+              var synth = {
+                speaking: false, pending: false, paused: false,
+                onvoiceschanged: null,
+                getVoices: function(){ return voices.slice(); },
+                speak: function(u){
+                  var text = (u && u.text) ? String(u.text) : '';
+                  if (!text) return;
+                  synth.speaking = true;
+                  try { if (u && u.onstart) u.onstart({ type: 'start', utterance: u }); } catch (e) {}
+                  try { window.DshTts && window.DshTts.speak(text); } catch (e) {}
+                  // Длительность неизвестна: отдаём end через оценку по символам.
+                  var ms = Math.min(30000, Math.max(800, text.length * 70));
+                  setTimeout(function(){
+                    synth.speaking = false;
+                    try { if (u && u.onend) u.onend({ type: 'end', utterance: u }); } catch (e) {}
+                  }, ms);
+                },
+                cancel: function(){ synth.speaking = false; try { window.DshTts && window.DshTts.stop(); } catch (e) {} },
+                pause: function(){ synth.paused = true; try { window.DshTts && window.DshTts.stop(); } catch (e) {} },
+                resume: function(){ synth.paused = false; }
+              };
+              try {
+                Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true, writable: true });
+              } catch (e) {
+                window.speechSynthesis = synth;
+              }
+              setTimeout(function(){
+                try { if (synth.onvoiceschanged) synth.onvoiceschanged({ type: 'voiceschanged' }); } catch (e) {}
+                try { window.dispatchEvent(new Event('voiceschanged')); } catch (e) {}
+              }, 300);
             })();
         """.trimIndent()
         web.evaluateJavascript(js, null)
