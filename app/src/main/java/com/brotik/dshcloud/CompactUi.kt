@@ -31,6 +31,11 @@ object CompactUi {
                 });
                 window.__dshCompactNodes = [];
                 window.__dshCompactWatching = false;
+                var chips = document.querySelectorAll('[data-dsh-chip-hidden="1"]');
+                for (var c = 0; c < chips.length; c++) {
+                  chips[c].style.removeProperty('display');
+                  delete chips[c].dataset.dshChipHidden;
+                }
                 return 'off';
               }
 
@@ -69,7 +74,23 @@ object CompactUi {
                 }
               }
 
-              function apply(){ walk(document, 0); }
+              // Чип выбора модели (📥 MD) в верхней панели — по просьбе БРАТИКА убираем целиком.
+              // Ищем кнопку с текстом «MD» именно в верхней полосе, чтобы не задеть переписку.
+              function hideModelChip(){
+                var nodes = document.querySelectorAll('button, [role="button"], [class*="chip"], [class*="Chip"]');
+                for (var i = 0; i < nodes.length; i++) {
+                  var el = nodes[i];
+                  if (el.dataset && el.dataset.dshChipHidden === '1') continue;
+                  var r = el.getBoundingClientRect();
+                  if (r.height === 0 || r.bottom > 260) continue;
+                  var text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                  if (!/^(\W*\s*)?MD$/.test(text)) continue;
+                  el.dataset.dshChipHidden = '1';
+                  el.style.setProperty('display', 'none', 'important');
+                }
+              }
+
+              function apply(){ walk(document, 0); hideModelChip(); }
 
               apply();
               if (window.__dshCompactWatching) return 'applied:' + saved.length;

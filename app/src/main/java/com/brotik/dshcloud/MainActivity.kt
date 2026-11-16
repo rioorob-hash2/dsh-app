@@ -12,6 +12,7 @@ import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.HttpAuthHandler
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -25,6 +26,8 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -53,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     private var lastNotified = ""
     private var lastNotifiedAt = 0L
     private var lastRecovery = 0L
+    /** Запрос WebView на микрофон, ждущий ответа системы. */
+    private var pendingAudioRequest: PermissionRequest? = null
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -93,6 +98,10 @@ class MainActivity : AppCompatActivity() {
 
         applyInsets()
         setupWebView()
+        // Клиентские бандлы GUI меняются вместе с релизом облака, а WebView их кэширует:
+        // без этого новые плагины (например, кнопка озвучки) не появляются.
+        // CookieManager это не трогает, вход (/login → /?token=… → cookie) не страдает.
+        web.clearCache(false)
 
         findViewById<TextView>(R.id.reload).setOnClickListener { reload() }
         findViewById<TextView>(R.id.reload).setOnLongClickListener {
@@ -146,7 +155,7 @@ class MainActivity : AppCompatActivity() {
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(false)
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            cacheMode = WebSettings.LOAD_DEFAULT
+            cacheMode = WebSettings.LOAD_NO_CACHE
         }
         // Прозрачный WebView: под ним виден ImageView с обоями (activity_main.xml)
         web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -217,6 +226,33 @@ class MainActivity : AppCompatActivity() {
                 progress.progress = newProgress
                 progress.visibility = if (newProgress in 1..99) View.VISIBLE else View.GONE
                 if (newProgress >= 100) offline.visibility = View.GONE
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // Микрофон для голосового ввода. Без этого WebView отвечает «доступ отключён».
+                val audio = PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                if (!request.resources.contains(audio)) {
+                    request.deny()
+                    return
+                }
+                if (ContextCompat.checkSelfPermission(
+                        this@MainActivity,
+                        android.Manifest.permission.RECORD_AUDIO,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    request.grant(request.resources)
+                } else {
+                    pendingAudioRequest = request
+                    ActivityCompat.requestPermissions(
+                        this@MainActivity,
+                        arrayOf(android.Manifest.permission.RECORD_AUDIO),
+                        REQ_AUDIO,
+                    )
+                }
+            }
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                if (pendingAudioRequest === request) pendingAudioRequest = null
             }
 
             override fun onShowFileChooser(
@@ -827,6 +863,28 @@ class MainActivity : AppCompatActivity() {
         showLoginDialog(firstRun = true)
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_AUDIO) return
+        val request = pendingAudioRequest
+        pendingAudioRequest = null
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            request?.grant(request.resources)
+            // Страница к этому моменту могла потерять контекст записи — перезагружаем,
+            // повторный onPermissionRequest уже получит grant без диалога.
+            web.postDelayed({ web.reload() }, 300)
+        } else {
+            request?.deny()
+            Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         inForeground = true
@@ -870,6 +928,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_USER = "user"
         private const val KEY_PASS = "pass"
         private const val KEY_COMPACT = "compact_ui"
+        private const val REQ_AUDIO = 1001
         private const val DEFAULT_URL = "https://dsh-cloud-production-706a3ba8.up.railway.app/login"
     }
 }

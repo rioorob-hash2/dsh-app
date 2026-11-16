@@ -50,4 +50,5 @@
     <string name="link_text">Свёрнуто — ответы придут уведомлением</string>
     <string name="test_notification">Проверить уведомление</string>
     <string name="notifications_blocked">Уведомления запрещены в системе — включи их для DSH в настройках</string>
+    <string name="mic_denied">Без доступа к микрофону голосовой ввод не работает. Разрешите его в настройках приложения.</string>
 </resources>
