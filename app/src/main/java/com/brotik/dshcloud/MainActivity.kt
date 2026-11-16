@@ -100,11 +100,21 @@ class MainActivity : AppCompatActivity() {
         askNotificationPermission()
 
         applyInsets()
+        initTts()
         setupWebView()
-        // Клиентские бандлы GUI меняются вместе с релизом облака, а WebView их кэширует:
-        // без этого новые плагины (например, кнопка озвучки) не появляются.
-        // CookieManager это не трогает, вход (/login → /?token=… → cookie) не страдает.
-        web.clearCache(false)
+        // Кэш чистим ОДИН раз после обновления приложения, а не на каждом старте:
+        // постоянный LOAD_NO_CACHE ломал клиентские плагины (кнопка озвучки пропадала).
+        // CookieManager не трогается, вход (/login → /?token=… → cookie) не страдает.
+        val stamp = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+        if (prefs.getString(KEY_CACHE_STAMP, "") != stamp) {
+            web.clearCache(true)
+            prefs.edit().putString(KEY_CACHE_STAMP, stamp).apply()
+            android.util.Log.i("DshApp", "cache cleared once for version " + stamp)
+        }
 
         findViewById<TextView>(R.id.reload).setOnClickListener { reload() }
         findViewById<TextView>(R.id.reload).setOnLongClickListener {
@@ -158,7 +168,7 @@ class MainActivity : AppCompatActivity() {
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(false)
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            cacheMode = WebSettings.LOAD_NO_CACHE
+            cacheMode = WebSettings.LOAD_DEFAULT
         }
         // Прозрачный WebView: под ним виден ImageView с обоями (activity_main.xml)
         web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -488,13 +498,99 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js) { res -> android.util.Log.i("DshTts", "info: " + res) }
     }
 
+    /** Создаёт системный TTS и логирует, доступен ли движок и русский голос. */
+    private fun initTts() {
+        tts = android.speech.tts.TextToSpeech(this) { status ->
+            ttsReady = status == android.speech.tts.TextToSpeech.SUCCESS
+            if (!ttsReady) {
+                android.util.Log.w("DshApp", "tts init failed: " + status)
+                return@TextToSpeech
+            }
+            tts?.setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            val ru = java.util.Locale("ru", "RU")
+            val avail = tts?.isLanguageAvailable(ru) ?: -99
+            val setResult = tts?.setLanguage(if (avail >= 0) ru else java.util.Locale.getDefault())
+            android.util.Log.i(
+                "DshApp",
+                "tts ready: engine=" + (tts?.defaultEngine ?: "?") +
+                    " ruAvail=" + avail + " langSet=" + setResult +
+                    " voices=" + (tts?.voices?.size ?: 0),
+            )
+            if (avail < 0) {
+                android.util.Log.w("DshApp", "tts: русский голос недоступен — нужны данные языка Google TTS")
+            }
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    android.util.Log.i("DshApp", "tts start: " + utteranceId)
+                }
+
+                override fun onDone(utteranceId: String?) {
+                    android.util.Log.i("DshApp", "tts done: " + utteranceId)
+                }
+
+                override fun onError(utteranceId: String?) {
+                    android.util.Log.w("DshApp", "tts error: " + utteranceId)
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    android.util.Log.w("DshApp", "tts error: " + utteranceId + " code=" + errorCode)
+                }
+            })
+        }
+    }
+
+    /** Нативная проверка озвучки: говорит тестовую фразу и показывает параметры движка. */
+    private fun testTts() {
+        val engine = try { tts?.defaultEngine ?: "?" } catch (e: Exception) { "?" }
+        val ru = java.util.Locale("ru", "RU")
+        val avail = try { tts?.isLanguageAvailable(ru) ?: -99 } catch (e: Exception) { -99 }
+        val voices = try { tts?.voices?.size ?: 0 } catch (e: Exception) { 0 }
+        if (!ttsReady) {
+            Toast.makeText(
+                this,
+                "TTS не готов (init failed). Движок: $engine",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        // Тон через ToneGenerator: проверяет сам аудиовыход (не TTS).
+        try {
+            val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 90)
+            tone.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 700)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ tone.release() }, 1200)
+        } catch (e: Exception) {
+            android.util.Log.w("DshApp", "tone failed: " + e.message)
+        }
+        val queued = tts?.speak(
+            "Проверка голоса. Раз, два, три.",
+            android.speech.tts.TextToSpeech.QUEUE_FLUSH,
+            null,
+            "dsh-tts-test",
+        ) ?: -1
+        Toast.makeText(
+            this,
+            "TTS: движок $engine, ru=$avail, голосов=$voices, speak=$queued",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
     /** Мост Android TextToSpeech для полифилла speechSynthesis. */
     inner class TtsBridge {
         @JavascriptInterface
         fun speak(text: String) {
-            if (!ttsReady || text.isBlank()) return
+            if (!ttsReady) {
+                android.util.Log.w("DshApp", "tts speak skipped: engine not ready")
+                return
+            }
+            if (text.isBlank()) return
             tts?.stop()
-            tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-tts")
+            val queued = tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-tts") ?: -1
+            android.util.Log.i("DshApp", "tts speak: len=" + text.length + " queued=" + queued)
         }
 
         @JavascriptInterface
@@ -902,6 +998,12 @@ class MainActivity : AppCompatActivity() {
             )
             container.addView(
                 android.widget.Button(this).apply {
+                    text = "🔊 Тест озвучки"
+                    setOnClickListener { testTts() }
+                },
+            )
+            container.addView(
+                android.widget.Button(this).apply {
                     text = getString(R.string.test_notification)
                     setOnClickListener {
                         Notifier.test(this@MainActivity)
@@ -1054,6 +1156,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_PASS = "pass"
         private const val KEY_COMPACT = "compact_ui"
         private const val REQ_AUDIO = 1001
+        private const val KEY_CACHE_STAMP = "cache_stamp"
         private const val DEFAULT_URL = "https://dsh-cloud-production-706a3ba8.up.railway.app/login"
     }
 }
