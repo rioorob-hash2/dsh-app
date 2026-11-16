@@ -472,7 +472,18 @@ class MainActivity : AppCompatActivity() {
     private fun dumpTtsInfo() {
         val js = """
             (function(){
+              var ls = [];
+              try {
+                for (var i = 0; i < localStorage.length && i < 60; i++) {
+                  var k = localStorage.key(i);
+                  var v = localStorage.getItem(k) || '';
+                  if (/voice|speech|asr|whisper|lang|tts|mic|stt/i.test(k)) {
+                    ls.push(k + '=' + v.slice(0, 120));
+                  }
+                }
+              } catch (e) {}
               var out = {
+                ls: ls,
                 lang: navigator.language,
                 langBefore: window.__dshLangBefore || '?',
                 speech: (typeof window.speechSynthesis !== 'undefined'),
@@ -543,6 +554,74 @@ class MainActivity : AppCompatActivity() {
                     android.util.Log.w("DshApp", "tts error: " + utteranceId + " code=" + errorCode)
                 }
             })
+        }
+    }
+
+    /** Вставка распознанного текста в поле ввода страницы. */
+    private fun insertDictation(text: String) {
+        val esc = org.json.JSONObject.quote(text)
+        val js = """
+            (function(){
+              var el = document.activeElement;
+              var isField = el && (el.tagName === 'TEXTAREA' ||
+                (el.isContentEditable) ||
+                (el.tagName === 'INPUT' && el.type === 'text'));
+              if (!isField) {
+                var cands = document.querySelectorAll('textarea, [contenteditable="true"]');
+                for (var i = 0; i < cands.length; i++) {
+                  if (cands[i].offsetParent !== null) { el = cands[i]; break; }
+                }
+              }
+              if (!el) return 'no field';
+              el.focus();
+              var text = $esc;
+              if (el.isContentEditable) {
+                document.execCommand('insertText', false, text);
+              } else {
+                var start = el.selectionStart || el.value.length;
+                var end = el.selectionEnd || el.value.length;
+                el.value = el.value.slice(0, start) + text + el.value.slice(end);
+                el.selectionStart = el.selectionEnd = start + text.length;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              return 'ok';
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js) { res ->
+            android.util.Log.i("DshApp", "dictation insert: " + res)
+            if (res != null && res.contains("no field")) {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("dictation", text))
+                Toast.makeText(this, "Нет поля ввода — текст скопирован", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private val dictation = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val list = result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+        val text = list?.firstOrNull()?.trim().orEmpty()
+        if (text.isEmpty()) {
+            Toast.makeText(this, "Ничего не распознано", Toast.LENGTH_SHORT).show()
+            return@registerForActivityResult
+        }
+        insertDictation(text)
+    }
+
+    /** Системная диктовка на русском (не зависит от плагина). */
+    private fun startDictation() {
+        val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Говори по-русски")
+        }
+        try {
+            dictation.launch(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Нет системного распознавателя речи", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1044,6 +1123,12 @@ class MainActivity : AppCompatActivity() {
                 android.widget.Button(this).apply {
                     text = if (prefs.getBoolean(KEY_COMPACT, true)) "Компактные кнопки: вкл" else "Компактные кнопки: выкл"
                     setOnClickListener { toggleCompactUi() }
+                },
+            )
+            container.addView(
+                android.widget.Button(this).apply {
+                    text = "🎤 Диктовка по-русски"
+                    setOnClickListener { startDictation() }
                 },
             )
             container.addView(
