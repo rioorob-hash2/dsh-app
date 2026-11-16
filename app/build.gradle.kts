@@ -13,8 +13,8 @@ android {
         applicationId = "com.brotik.dshcloud"
         minSdk = 24
         targetSdk = 35
-        versionCode = 39
-        versionName = "5.2"
+        versionCode = 40
+        versionName = "5.3"
     }
 
     val keystoreFile = rootProject.file("keystore.jks")

@@ -544,6 +544,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Читает последний ответ агента системным TTS (без плагина). Повторное нажатие — стоп. */
+    private fun readLastAnswer() {
+        if (!ttsReady) {
+            Toast.makeText(this, "TTS не готов: нет движка или языка", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (tts?.isSpeaking == true) {
+            tts?.stop()
+            Toast.makeText(this, "Чтение остановлено", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val js = """
+            (function(){
+              var nodes = document.querySelectorAll('[class*="vHCAGq_root"], [class*="EvIC1a_flowItem"]');
+              var best = '';
+              for (var i = 0; i < nodes.length; i++) {
+                var t = (nodes[i].innerText || '').trim();
+                if (t.length > best.length) best = t;
+              }
+              if (!best && document.body) best = (document.body.innerText || '').trim();
+              return JSON.stringify(best.slice(-3000));
+            })();
+        """.trimIndent()
+        web.evaluateJavascript(js) { raw ->
+            val text = try {
+                (org.json.JSONTokener(raw ?: "").nextValue() as? String) ?: ""
+            } catch (e: Exception) {
+                ""
+            }
+            val clean = text.trim()
+            if (clean.isBlank()) {
+                Toast.makeText(this, "Не нашёл текст ответа на странице", Toast.LENGTH_LONG).show()
+                return@evaluateJavascript
+            }
+            tts?.speak(clean, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "dsh-read")
+            Toast.makeText(this, "Читаю " + clean.length + " символов", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     /** Нативная проверка озвучки: говорит тестовую фразу и показывает параметры движка. */
     private fun testTts() {
         val engine = try { tts?.defaultEngine ?: "?" } catch (e: Exception) { "?" }
@@ -994,6 +1033,12 @@ class MainActivity : AppCompatActivity() {
                 android.widget.Button(this).apply {
                     text = if (prefs.getBoolean(KEY_COMPACT, true)) "Компактные кнопки: вкл" else "Компактные кнопки: выкл"
                     setOnClickListener { toggleCompactUi() }
+                },
+            )
+            container.addView(
+                android.widget.Button(this).apply {
+                    text = "📖 Прочитать последний ответ"
+                    setOnClickListener { readLastAnswer() }
                 },
             )
             container.addView(
