@@ -473,6 +473,8 @@ class MainActivity : AppCompatActivity() {
         val js = """
             (function(){
               var out = {
+                lang: navigator.language,
+                langBefore: window.__dshLangBefore || '?',
                 speech: (typeof window.speechSynthesis !== 'undefined'),
                 voices: (window.speechSynthesis && window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices().length : -1),
                 ttsButtons: [],
@@ -651,6 +653,15 @@ class MainActivity : AppCompatActivity() {
             (function(){
               if (window.__dshTtsPolyfill) return;
               window.__dshTtsPolyfill = true;
+              // Системная локаль устройства — ru-UA; клиентские плагины (распознавание речи, TTS)
+              // ожидают ru-RU и иначе откатываются на английский.
+              try {
+                var before = navigator.language;
+                Object.defineProperty(navigator, 'language', { get: function(){ return 'ru-RU'; }, configurable: true });
+                Object.defineProperty(navigator, 'languages', { get: function(){ return ['ru-RU', 'ru']; }, configurable: true });
+                window.__dshLangBefore = before;
+              } catch (e) {}
+
               if ('speechSynthesis' in window && window.speechSynthesis) return;
 
               function Utterance(text) {
