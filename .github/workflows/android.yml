@@ -54,12 +54,13 @@ jobs:
 
       # Robolectric в проекте ищет android-all jar в локальной папке
       # robolectric-deps (см. app/build.gradle.kts). На раннере её нет, поэтому
-      # кладём jar туда заранее; кэш избавляет от повторной загрузки 150 МБ.
+      # кладём нужные jar туда заранее; кэш избавляет от повторной загрузки ~350 МБ.
+      # Нужны оба: API 34 (локальный @Config) и API 35 (targetSdk).
       - name: Restore Robolectric jar cache
         uses: actions/cache@v4
         with:
           path: robolectric-deps
-          key: robolectric-android-all-14-robolectric-10818077-i7
+          key: robolectric-android-all-14-10818077_15-12650502-i7
 
       - name: Prepare Robolectric deps
         run: |
@@ -69,11 +70,13 @@ jobs:
             exit 0
           fi
           mkdir -p robolectric-deps
-          jar=android-all-instrumented-14-robolectric-10818077-i7.jar
-          if [ ! -s "robolectric-deps/$jar" ]; then
-            curl -fsSL --retry 3 -o "robolectric-deps/$jar" \
-              "https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/14-robolectric-10818077-i7/$jar"
-          fi
+          for version in 14-robolectric-10818077-i7 15-robolectric-12650502-i7; do
+            jar="android-all-instrumented-$version.jar"
+            if [ ! -s "robolectric-deps/$jar" ]; then
+              curl -fsSL --retry 3 -o "robolectric-deps/$jar" \
+                "https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/$version/$jar"
+            fi
+          done
           ls -l robolectric-deps
 
       - name: Unit tests
