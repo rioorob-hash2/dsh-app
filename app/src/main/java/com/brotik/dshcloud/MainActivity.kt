@@ -167,7 +167,7 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         }
         // Прозрачный WebView: под ним виден ImageView с обоями (activity_main.xml)
-        web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        web.setBackgroundColor(android.graphics.Color.parseColor("#0B0E13"))
         // Renderer должен переживать уход в фон: иначе Javascript, следящий за ответом
         // агента, умрёт вместе с рендерером и уведомление не придёт.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -216,7 +216,7 @@ class MainActivity : AppCompatActivity() {
                 injectSaver()
                 injectReplyWatcher()
                 applyCompactUi()
-                injectWallpaper()
+                // обои отключены по просьбе БРАТИКА: чат читается на чистом фоне
                 web.evaluateJavascript(
                     "(document.body ? (document.body.innerText || '').slice(0, 300) : '')",
                 ) { raw ->
