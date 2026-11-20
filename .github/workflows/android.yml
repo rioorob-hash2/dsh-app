@@ -52,6 +52,30 @@ jobs:
           } > keystore.properties
           ls -l keystore.jks keystore.properties
 
+      # Robolectric в проекте ищет android-all jar в локальной папке
+      # robolectric-deps (см. app/build.gradle.kts). На раннере её нет, поэтому
+      # кладём jar туда заранее; кэш избавляет от повторной загрузки 150 МБ.
+      - name: Restore Robolectric jar cache
+        uses: actions/cache@v4
+        with:
+          path: robolectric-deps
+          key: robolectric-android-all-14-robolectric-10818077-i7
+
+      - name: Prepare Robolectric deps
+        run: |
+          set -euo pipefail
+          if ! grep -q robolectric app/build.gradle.kts; then
+            echo "robolectric не используется — пропуск"
+            exit 0
+          fi
+          mkdir -p robolectric-deps
+          jar=android-all-instrumented-14-robolectric-10818077-i7.jar
+          if [ ! -s "robolectric-deps/$jar" ]; then
+            curl -fsSL --retry 3 -o "robolectric-deps/$jar" \
+              "https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/14-robolectric-10818077-i7/$jar"
+          fi
+          ls -l robolectric-deps
+
       - name: Unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
